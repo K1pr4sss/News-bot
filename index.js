@@ -7,6 +7,7 @@ const geckoterminal = require('./lib/geckoterminal');
 const coingecko = require('./lib/coingecko');
 const dexscreener = require('./lib/dexscreener');
 const reddit = require('./lib/reddit');
+const googleAlerts = require('./lib/googleAlerts');
 const walletTracker = require('./lib/walletTracker');
 const telegramBot = require('./lib/telegramBot');
 const positions = require('./lib/positions');
@@ -112,6 +113,7 @@ function start() {
   coingecko.start();
   dexscreener.start();
   reddit.start();
+  googleAlerts.start();
   walletTracker.start();
   telegramBot.start();
 
