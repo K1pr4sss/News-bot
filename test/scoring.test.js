@@ -2,19 +2,18 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { scoreToken, computeVolumeSpikeRatio, computeSizeTier } = require('../lib/scoring');
 
-test('scoreToken sums independent signal categories correctly', () => {
+test('scoreToken sums independent signal categories correctly (max 85 - no insider category)', () => {
   const result = scoreToken({
     mentionCount: 20, // saturates social (30)
     volumeH1Usd: 10000, volumeH24Usd: 24000, // ratio = 10000/1000 = 10x -> saturates volume (25)
     matchedTrendingKeyword: true, matchedTrendingPool: true, isBoosted: true, // 3 sources -> 20
-    insiderBuyerCount: 3, // -> 15
     positiveRatio: 1, // -> 10
   });
-  assert.strictEqual(result.score, 100);
+  assert.strictEqual(result.score, 85);
 });
 
 test('scoreToken with zero signals scores 0', () => {
-  const result = scoreToken({ mentionCount: 0, volumeH1Usd: 0, volumeH24Usd: 0, insiderBuyerCount: 0 });
+  const result = scoreToken({ mentionCount: 0, volumeH1Usd: 0, volumeH24Usd: 0 });
   assert.strictEqual(result.score, 0);
 });
 

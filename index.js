@@ -9,7 +9,6 @@ const dexscreener = require('./lib/dexscreener');
 const reddit = require('./lib/reddit');
 const googleAlerts = require('./lib/googleAlerts');
 const telegramUserClient = require('./lib/telegramUserClient');
-const walletTracker = require('./lib/walletTracker');
 const telegramBot = require('./lib/telegramBot');
 const positions = require('./lib/positions');
 const evaluator = require('./lib/evaluator');
@@ -116,7 +115,6 @@ function start() {
   reddit.start();
   googleAlerts.start();
   telegramUserClient.start();
-  walletTracker.start();
   telegramBot.start();
 
   pumpPortal = new PumpPortalStream({ onNewToken: handlePumpPortalCreate });
