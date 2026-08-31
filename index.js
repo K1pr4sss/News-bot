@@ -74,6 +74,14 @@ async function trendingTick() {
   }
 }
 
+async function pendingTick() {
+  try {
+    await evaluator.pendingCandidatesTick();
+  } catch (err) {
+    logger.error('Pending-candidate retry tick failed', { error: err.message });
+  }
+}
+
 async function exitTick() {
   try {
     const open = positions.getOpenPositions();
@@ -124,6 +132,7 @@ function start() {
 
   scheduleInterval(discoveryTick, config.discoveryPollIntervalMs);
   scheduleInterval(trendingTick, config.trendingPollIntervalMs);
+  scheduleInterval(pendingTick, config.pendingCandidateRecheckIntervalMs);
   scheduleInterval(exitTick, config.exitPollIntervalMs);
 
   app.listen(config.port, () => logger.info(`HTTP server listening on :${config.port}`));
