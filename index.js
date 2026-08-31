@@ -111,9 +111,23 @@ async function handlePumpPortalCreate(msg) {
   }, 30000);
 }
 
+// Self-scheduling (setTimeout-after-completion), NOT setInterval - real bug
+// found live: setInterval fires on a fixed clock regardless of whether the
+// previous call finished, and exitTick's own GeckoTerminal calls share the
+// same rate-limited queue as discovery/trending/pending, which can back up
+// well past the 10s exit interval under load. That let TWO overlapping
+// exitTick calls run at once, each reading a position's flags/remaining
+// amount BEFORE the other's sell had been written, each independently
+// deciding to sell - confirmed live as a single RUPERT position selling
+// "70% of original" 36 TIMES in a row instead of once. This alone doesn't
+// fully close the gap (see positions.js's atomic flag-claim for the actual
+// belt-and-suspenders fix), but it removes the root cause.
 function scheduleInterval(fn, intervalMs) {
-  fn().catch((e) => logger.error('Scheduled tick failed', { error: e.message }));
-  setInterval(() => fn().catch((e) => logger.error('Scheduled tick failed', { error: e.message })), intervalMs);
+  const run = () => {
+    fn().catch((e) => logger.error('Scheduled tick failed', { error: e.message }))
+      .finally(() => setTimeout(run, intervalMs));
+  };
+  run();
 }
 
 function start() {

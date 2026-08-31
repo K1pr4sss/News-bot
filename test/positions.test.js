@@ -67,6 +67,28 @@ test('entry sizing matches the score-band table against live paper balance', asy
   assert.ok(Math.abs(entry.amountSol - balanceBefore * 0.10) < 1e-9);
 });
 
+test('two overlapping exit-ticks reading the same stale position only sell once (regression: real live bug - one position sold "70% of original" 36 times in 13 minutes instead of once, because overlapping async ticks each read remaining_amount_sol before the other had written it)', async () => {
+  const pos = insertOpenPosition({ mint: 'RACE', original_amount_sol: 0.05, remaining_amount_sol: 0.05 });
+  // Two independent snapshots of the SAME row, exactly like two overlapping
+  // getOpenPositions() calls would each return before either tick's write -
+  // NOT the same object reference, which would defeat the point of the test.
+  const snapshotA = { ...pos };
+  const snapshotB = { ...pos };
+
+  await Promise.all([
+    // priceUsd === entry price (0% change) so neither stop-loss nor take-profit
+    // fires first - isolates the score-exit branch (score < 40 -> sell 70% of original).
+    positions.evaluateExit(snapshotA, { priceUsd: 1.0 }, { score: 10, volumeRatio: 3 }),
+    positions.evaluateExit(snapshotB, { priceUsd: 1.0 }, { score: 10, volumeRatio: 3 }),
+  ]);
+
+  const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('RACE');
+  // 70% of 0.05 = 0.035 sold ONCE, not twice - remaining should be 0.015, not -0.02.
+  assert.ok(Math.abs(row.remaining_amount_sol - 0.015) < 1e-9, `expected 0.015 remaining after exactly one 70% sell, got ${row.remaining_amount_sol}`);
+  const sells = db.prepare("SELECT * FROM trades WHERE mint = 'RACE' AND side = 'sell'").all();
+  assert.strictEqual(sells.length, 1, `expected exactly 1 recorded sell, got ${sells.length}`);
+});
+
 test('a mint can be manually re-bought after its first position fully closes (regression: positions.mint used to be a PRIMARY KEY, which crashed on this exact sequence)', async () => {
   const first = await positions.attemptManualBuy('REBUY', 0.01);
   assert.strictEqual(first.ok, true);
