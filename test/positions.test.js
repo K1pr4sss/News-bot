@@ -6,7 +6,10 @@ const test = require('node:test');
 const assert = require('node:assert');
 const db = require('../lib/db');
 const executor = require('../lib/executor');
+const dexscreener = require('../lib/dexscreener');
 const positions = require('../lib/positions');
+
+dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 2, liquidityUsd: 5000 });
 
 function insertOpenPosition(overrides = {}) {
   const base = {
@@ -62,4 +65,19 @@ test('entry sizing matches the score-band table against live paper balance', asy
   );
   assert.strictEqual(entry.tier.label, '55-70');
   assert.ok(Math.abs(entry.amountSol - balanceBefore * 0.10) < 1e-9);
+});
+
+test('a mint can be manually re-bought after its first position fully closes (regression: positions.mint used to be a PRIMARY KEY, which crashed on this exact sequence)', async () => {
+  const first = await positions.attemptManualBuy('REBUY', 0.01);
+  assert.strictEqual(first.ok, true);
+  const sellResult = await positions.attemptManualSell('REBUY');
+  assert.strictEqual(sellResult.ok, true);
+
+  const second = await positions.attemptManualBuy('REBUY', 0.01);
+  assert.strictEqual(second.ok, true, `second buy should succeed, got: ${second.reason}`);
+
+  const rows = db.prepare('SELECT * FROM positions WHERE mint = ?').all('REBUY');
+  assert.strictEqual(rows.length, 2);
+  assert.strictEqual(rows[0].status, 'closed');
+  assert.strictEqual(rows[1].status, 'open');
 });
