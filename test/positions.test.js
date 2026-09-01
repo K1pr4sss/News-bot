@@ -89,6 +89,24 @@ test('two overlapping exit-ticks reading the same stale position only sell once 
   assert.strictEqual(sells.length, 1, `expected exactly 1 recorded sell, got ${sells.length}`);
 });
 
+test('two overlapping entry-ticks evaluating the same brand-new mint only buy once (regression: attemptEntry\'s hasOpenPosition check was synchronous but executor.buy() was awaited before the position row existed to check against, so e.g. discoveryTick and pendingTick could both pass the check for the same mint moments apart and each independently buy)', async () => {
+  const token = { mint: 'DOUBLEBUY', name: 'Double', symbol: 'DBL', priceUsd: 1, liquidityUsd: 10000 };
+  const score = { score: 60 };
+
+  const [resultA, resultB] = await Promise.all([
+    positions.attemptEntry(token, score),
+    positions.attemptEntry(token, score),
+  ]);
+
+  const successes = [resultA, resultB].filter((r) => r !== null);
+  assert.strictEqual(successes.length, 1, `expected exactly one of the two concurrent entries to succeed, got ${successes.length}`);
+
+  const rows = db.prepare("SELECT * FROM positions WHERE mint = 'DOUBLEBUY'").all();
+  assert.strictEqual(rows.length, 1, `expected exactly 1 position row, got ${rows.length}`);
+  const buys = db.prepare("SELECT * FROM trades WHERE mint = 'DOUBLEBUY' AND side = 'buy'").all();
+  assert.strictEqual(buys.length, 1, `expected exactly 1 recorded buy, got ${buys.length}`);
+});
+
 test('a mint can be manually re-bought after its first position fully closes (regression: positions.mint used to be a PRIMARY KEY, which crashed on this exact sequence)', async () => {
   const first = await positions.attemptManualBuy('REBUY', 0.01);
   assert.strictEqual(first.ok, true);
