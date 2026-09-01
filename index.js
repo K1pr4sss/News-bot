@@ -10,6 +10,8 @@ const reddit = require('./lib/reddit');
 const googleAlerts = require('./lib/googleAlerts');
 const telegramUserClient = require('./lib/telegramUserClient');
 const youtube = require('./lib/youtube');
+const twitter = require('./lib/twitter');
+const farcaster = require('./lib/farcaster');
 const telegramBot = require('./lib/telegramBot');
 const positions = require('./lib/positions');
 const evaluator = require('./lib/evaluator');
@@ -139,6 +141,8 @@ function start() {
   googleAlerts.start();
   telegramUserClient.start();
   youtube.start();
+  twitter.start();
+  farcaster.start();
   telegramBot.start();
 
   pumpPortal = new PumpPortalStream({ onNewToken: handlePumpPortalCreate });
