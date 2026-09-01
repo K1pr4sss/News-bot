@@ -1,6 +1,5 @@
 process.env.DB_PATH = ':memory:';
 process.env.PAPER_STARTING_BALANCE_SOL = '1.0';
-process.env.REQUIRE_SOCIALS = 'false';
 
 const test = require('node:test');
 const assert = require('node:assert');

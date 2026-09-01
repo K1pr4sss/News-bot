@@ -1,5 +1,3 @@
-process.env.REQUIRE_SOCIALS = 'false';
-
 const test = require('node:test');
 const assert = require('node:assert');
 const { runSafetyFilters } = require('../lib/filters');
