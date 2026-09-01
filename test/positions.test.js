@@ -62,6 +62,7 @@ test('entry sizing matches the score-band table against live paper balance', asy
     { mint: 'ENTRY1', name: 'Entry', symbol: 'ENT', priceUsd: 1, liquidityUsd: 10000 },
     { score: 60 }, // 55-70 band -> 10%
   );
+  assert.strictEqual(entry.ok, true);
   assert.strictEqual(entry.tier.label, '55-70');
   assert.ok(Math.abs(entry.amountSol - balanceBefore * 0.10) < 1e-9);
 });
@@ -97,8 +98,10 @@ test('two overlapping entry-ticks evaluating the same brand-new mint only buy on
     positions.attemptEntry(token, score),
   ]);
 
-  const successes = [resultA, resultB].filter((r) => r !== null);
+  const successes = [resultA, resultB].filter((r) => r.ok);
   assert.strictEqual(successes.length, 1, `expected exactly one of the two concurrent entries to succeed, got ${successes.length}`);
+  const failure = [resultA, resultB].find((r) => !r.ok);
+  assert.ok(failure.reason, 'the losing concurrent entry should report why, not just fail silently');
 
   const rows = db.prepare("SELECT * FROM positions WHERE mint = 'DOUBLEBUY'").all();
   assert.strictEqual(rows.length, 1, `expected exactly 1 position row, got ${rows.length}`);
