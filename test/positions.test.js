@@ -43,6 +43,27 @@ test('stop-loss at -20% closes the full remaining position', async () => {
   assert.strictEqual(row.status, 'closed');
 });
 
+test('stop-loss still fires immediately within the bearish-exit grace period (grace only shields the score/volume ladder, never real risk protection)', async () => {
+  const pos = insertOpenPosition({ mint: 'SLGRACE', opened_at: Date.now() }); // brand new, well inside the 90s grace window
+  await positions.evaluateExit(pos, { priceUsd: 0.79 }, flatScore); // -21%
+  const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('SLGRACE');
+  assert.strictEqual(row.status, 'closed', 'stop-loss must not be delayed by the bearish-exit grace period');
+});
+
+test('bearish score-exit ladder is held off within the grace period (regression: real live data showed 10/12 losing trades held only 19-35s - a near-threshold entry earns most of its score from a volume spike that fades by the very next exit-tick poll, killing the position before price has any chance to move) then fires once the grace period passes', async () => {
+  const dyingScore = { score: 10, volumeRatio: 3 }; // clearly below the 40 exit threshold
+  const freshPos = insertOpenPosition({ mint: 'GRACE1', opened_at: Date.now() }); // 0s old
+  await positions.evaluateExit(freshPos, { priceUsd: 1.0 }, dyingScore); // flat price - isolates the score-exit branch
+  const stillOpen = db.prepare('SELECT * FROM positions WHERE mint = ?').get('GRACE1');
+  assert.strictEqual(stillOpen.status, 'open', 'should not have sold yet - still inside the grace period');
+  assert.strictEqual(stillOpen.score_exit_fired, 0);
+
+  const agedPos = { ...stillOpen, opened_at: Date.now() - 100 * 1000 }; // 100s old - past the 90s default grace
+  await positions.evaluateExit(agedPos, { priceUsd: 1.0 }, dyingScore);
+  const nowSold = db.prepare('SELECT * FROM positions WHERE mint = ?').get('GRACE1');
+  assert.strictEqual(nowSold.score_exit_fired, 1, 'should have sold once the grace period passed');
+});
+
 test('take-profit ladder walks tier1 -> tier2 -> tier3 to fully closed', async () => {
   const pos1 = insertOpenPosition({ mint: 'LADDER' });
   await positions.evaluateExit(pos1, { priceUsd: 1.30 }, flatScore); // tier1: -50%
@@ -68,7 +89,12 @@ test('entry sizing matches the score-band table against live paper balance', asy
 });
 
 test('two overlapping exit-ticks reading the same stale position only sell once (regression: real live bug - one position sold "70% of original" 36 times in 13 minutes instead of once, because overlapping async ticks each read remaining_amount_sol before the other had written it)', async () => {
-  const pos = insertOpenPosition({ mint: 'RACE', original_amount_sol: 0.05, remaining_amount_sol: 0.05 });
+  // opened_at pushed past the bearish-exit grace period (default 90s) -
+  // otherwise the grace gate added later would return before this test's
+  // score-exit branch ever ran, unrelated to the race condition being tested.
+  const pos = insertOpenPosition({
+    mint: 'RACE', original_amount_sol: 0.05, remaining_amount_sol: 0.05, opened_at: Date.now() - 200 * 1000,
+  });
   // Two independent snapshots of the SAME row, exactly like two overlapping
   // getOpenPositions() calls would each return before either tick's write -
   // NOT the same object reference, which would defeat the point of the test.
