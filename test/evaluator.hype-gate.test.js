@@ -15,6 +15,7 @@ const geckoterminal = require('../lib/geckoterminal');
 const positions = require('../lib/positions');
 const evaluator = require('../lib/evaluator');
 const db = require('../lib/db');
+const telegramBot = require('../lib/telegramBot');
 
 // Stub every external source evaluateCandidate touches - this test is about
 // the real-mention gate specifically, not any one source's actual behavior.
@@ -63,4 +64,21 @@ test('exit-side re-scoring reuses the entry-time socials bonus instead of droppi
   dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 1 });
   const { scoreResult } = await evaluator.getLiveTokenAndScore(position);
   assert.ok(scoreResult.reasons.some((r) => r.includes('3 social links')), `expected the socials bonus to still apply on exit re-score, got reasons: ${JSON.stringify(scoreResult.reasons)}`);
+});
+
+test('a real alert names WHERE the hype was actually seen and includes the coin\'s own description, not just a raw score', async () => {
+  pumpfunApi.getSocials = async () => ({ count: 0, description: 'a frog that trades better than you' });
+  googleAlerts.getSignal = () => ({ mentionCount: 1 });
+  telegramUserClient.getSignal = () => ({ mentionCount: 2 });
+
+  let sentText = null;
+  telegramBot.sendAlert = (text) => { sentText = text; };
+
+  await evaluator.evaluateCandidate(hypedLiquidToken('WHYLINE'));
+
+  assert.ok(sentText, 'expected an alert to have been sent');
+  assert.ok(sentText.includes('"a frog that trades better than you"'), `expected the coin's own description in the alert, got: ${sentText}`);
+  assert.ok(sentText.includes('Why:'), `expected a "Why:" line, got: ${sentText}`);
+  assert.ok(sentText.includes('Telegram alpha groups'), `expected the actual contributing source named, got: ${sentText}`);
+  assert.ok(sentText.includes('CoinGecko trending search'), `expected the specific trending source named, not just a count, got: ${sentText}`);
 });
