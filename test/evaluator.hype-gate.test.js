@@ -82,3 +82,19 @@ test('a real alert names WHERE the hype was actually seen and includes the coin\
   assert.ok(sentText.includes('Telegram alpha groups'), `expected the actual contributing source named, got: ${sentText}`);
   assert.ok(sentText.includes('CoinGecko trending search'), `expected the specific trending source named, not just a count, got: ${sentText}`);
 });
+
+test('a real alert quotes an actual post verbatim (not an AI paraphrase), prioritizing Telegram/X over Google Alerts when both fired', async () => {
+  pumpfunApi.getSocials = async () => ({ count: 0, description: '' });
+  googleAlerts.getSignal = () => ({ mentionCount: 1, sampleText: 'Boring News Co: new memecoin launches on Solana' });
+  telegramUserClient.getSignal = () => ({ mentionCount: 2, sampleText: 'yo this coin is actually the play, ape in now' });
+
+  let sentText = null;
+  telegramBot.sendAlert = (text) => { sentText = text; };
+
+  await evaluator.evaluateCandidate(hypedLiquidToken('SAMPLEPOST'));
+
+  assert.ok(sentText, 'expected an alert to have been sent');
+  assert.ok(sentText.includes('yo this coin is actually the play, ape in now'), `expected the higher-priority Telegram sample quoted verbatim, got: ${sentText}`);
+  assert.ok(sentText.includes('via Telegram alpha groups'), `expected the sample's source attributed, got: ${sentText}`);
+  assert.ok(!sentText.includes('Boring News Co'), 'expected only ONE sample quoted (the higher-priority one), not both');
+});

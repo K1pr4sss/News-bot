@@ -33,10 +33,12 @@ test('GetXAPI: budget-capped (real per-call money, not a free quota), fails clos
   const noKeyTwitter = require('../lib/twitter');
   const before = callCount;
   const noKeyResult = await noKeyTwitter.searchMentionCount('somecoin');
-  assert.strictEqual(noKeyResult, 0);
+  assert.deepStrictEqual(noKeyResult, { mentionCount: 0, sampleText: null });
   assert.strictEqual(callCount, before, 'should not have made a real call with no key');
 
-  // 3. Only counts tweets within the mention window, not stale older ones.
+  // 3. Only counts tweets within the mention window (not stale older ones),
+  // and returns the fresh tweet's ACTUAL text verbatim, not a paraphrase -
+  // real user ask: see the real post, not a guessed-at summary.
   process.env.GETXAPI_API_KEY = 'test-key';
   delete require.cache[require.resolve('../lib/config')];
   delete require.cache[require.resolve('../lib/twitter')];
@@ -44,11 +46,12 @@ test('GetXAPI: budget-capped (real per-call money, not a free quota), fails clos
   axios.get = async () => ({
     data: {
       tweets: [
-        { createdAt: new Date().toUTCString() }, // fresh
-        { createdAt: new Date(Date.now() - 60 * 60 * 1000).toUTCString() }, // 1h old - stale
+        { createdAt: new Date().toUTCString(), text: 'wagmi this coin is the next big thing' }, // fresh
+        { createdAt: new Date(Date.now() - 60 * 60 * 1000).toUTCString(), text: 'old stale tweet' }, // 1h old - stale
       ],
     },
   });
   const windowResult = await freshTwitter.searchMentionCount('somecoin', 5);
-  assert.strictEqual(windowResult, 1, `expected only the fresh tweet to count, got ${windowResult}`);
+  assert.strictEqual(windowResult.mentionCount, 1, `expected only the fresh tweet to count, got ${windowResult.mentionCount}`);
+  assert.strictEqual(windowResult.sampleText, 'wagmi this coin is the next big thing');
 });

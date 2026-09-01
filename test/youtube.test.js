@@ -29,6 +29,6 @@ test('returns 0 without making a call when no API key is configured', async () =
   delete require.cache[require.resolve('../lib/youtube')];
   const freshYoutube = require('../lib/youtube');
   const result = await freshYoutube.searchMentionCount('somecoin');
-  assert.strictEqual(result, 0);
+  assert.deepStrictEqual(result, { mentionCount: 0, sampleText: null });
   assert.strictEqual(callCount, before);
 });
