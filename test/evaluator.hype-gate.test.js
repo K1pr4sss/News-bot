@@ -11,8 +11,10 @@ const dexscreener = require('../lib/dexscreener');
 const reddit = require('../lib/reddit');
 const googleAlerts = require('../lib/googleAlerts');
 const telegramUserClient = require('../lib/telegramUserClient');
+const geckoterminal = require('../lib/geckoterminal');
 const positions = require('../lib/positions');
 const evaluator = require('../lib/evaluator');
+const db = require('../lib/db');
 
 // Stub every external source evaluateCandidate touches - this test is about
 // the real-mention gate specifically, not any one source's actual behavior.
@@ -48,4 +50,17 @@ test('the same shape of candidate DOES get bought once it clears the real-mentio
   googleAlerts.getSignal = () => ({ mentionCount: 1 });
   await evaluator.evaluateCandidate(hypedLiquidToken('WITHMENTION'));
   assert.strictEqual(hasOpenPosition('WITHMENTION'), true);
+});
+
+test('exit-side re-scoring reuses the entry-time socials bonus instead of dropping it to zero (regression: getLiveTokenAndScore was built before the socials scoring category existed, so every open position lost up to 15 real points on its very first exit-tick re-score for free, biasing the score-drop exit trigger toward firing early)', async () => {
+  pumpfunApi.getSocials = async () => ({ count: 3 }); // +15 socials bonus at entry
+  googleAlerts.getSignal = () => ({ mentionCount: 1 });
+  await evaluator.evaluateCandidate(hypedLiquidToken('SOCIALSPERSIST'));
+  const position = db.prepare("SELECT * FROM positions WHERE mint = 'SOCIALSPERSIST' AND status = 'open'").get();
+  assert.strictEqual(position.entry_socials_count, 3, 'socials count from entry should be persisted on the position row');
+
+  geckoterminal.getPoolsForToken = async () => [{ volumeH1Usd: 0, volumeH24Usd: 0 }];
+  dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 1 });
+  const { scoreResult } = await evaluator.getLiveTokenAndScore(position);
+  assert.ok(scoreResult.reasons.some((r) => r.includes('3 social links')), `expected the socials bonus to still apply on exit re-score, got reasons: ${JSON.stringify(scoreResult.reasons)}`);
 });
