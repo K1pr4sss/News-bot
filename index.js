@@ -120,18 +120,24 @@ async function exitTick() {
 
 async function handlePumpPortalCreate(msg) {
   logger.info('PumpPortal new token', { mint: msg.mint, symbol: msg.symbol });
-  // Give GeckoTerminal's own indexer a little time to pick up the pool before
-  // trying to resolve it - see getPoolsForToken's own comment on why this is
-  // best-effort. If it's not found yet, the next discoveryTick/new_pools poll
-  // will pick this token up anyway once it has real trading data.
-  setTimeout(async () => {
-    try {
-      const pools = await geckoterminal.getPoolsForToken(msg.mint);
-      for (const token of pools) await evaluator.evaluateCandidate(token);
-    } catch (err) {
-      logger.debug('PumpPortal->GeckoTerminal resolve failed', { mint: msg.mint, error: err.message });
-    }
-  }, 30000);
+  // Real bug found via live diagnostics (2026-09-02): this used to fire its
+  // own individual GeckoTerminal getPoolsForToken lookup per new token, 30s
+  // after creation. PumpPortal alone produces dozens of tokens/minute under
+  // real load - that's dozens of extra low-priority calls/minute competing
+  // for the same ~30 req/min GeckoTerminal budget that pendingCandidatesTick
+  // (one call per pending candidate, every 90s - already 20-30+/min on a
+  // real pending queue) and exit-tick's now-prioritized position checks all
+  // share. Real evidence this was saturating the whole pipeline: a 14-hour
+  // production window logged only 36 total rejections, 100% of them on
+  // liquidity/top-holder - i.e. NOTHING ever cleared filters to even reach
+  // scoring, because candidates that would have matured never got a timely
+  // re-check before aging out of the pending queue. discoveryTick already
+  // polls GeckoTerminal's batch new_pools endpoint every 2 minutes and picks
+  // up the same new tokens in ONE call regardless of how many launched -
+  // this per-token resolve was redundant with that, not additive coverage,
+  // and was the single biggest source of the overload. Detection now lags
+  // by up to ~2min (one discoveryTick cycle) instead of ~30s, in exchange
+  // for the whole pipeline actually being able to keep up.
 }
 
 // Self-scheduling (setTimeout-after-completion), NOT setInterval - real bug
