@@ -88,6 +88,23 @@ test('entry sizing matches the score-band table against live paper balance', asy
   assert.ok(Math.abs(entry.amountSol - balanceBefore * 0.10) < 1e-9);
 });
 
+test('attemptEntry buys at a FRESH price, not the stale one carried on the token object (regression: real P&L verification against a live trade - "pippo" - found the recorded entry price matched no point in the coin\'s real price history, off by ~3.8x. Root cause: discoveryTick evaluates a whole getNewPools() batch sequentially, so a candidate late in a large batch can be bought minutes after its price snapshot was taken. attemptEntry used to trust that stale token.priceUsd directly instead of re-fetching)', async () => {
+  // Earlier tests in this file leave several positions open by design (see
+  // the AUTOREBUY test's identical comment) - force a clean slate so this
+  // test's own maxOpenPositions budget isn't consumed by unrelated tests.
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
+
+  const staleToken = {
+    mint: 'STALEPRICE', name: 'Stale', symbol: 'STL', liquidityUsd: 10000, priceUsd: 999, // obviously wrong/stale - the real fetch (mocked to 2 for this file) must win
+  };
+  const entry = await positions.attemptEntry(staleToken, { score: 60 });
+  assert.strictEqual(entry.ok, true, `entry should succeed, got: ${entry.reason}`);
+  const row = db.prepare("SELECT * FROM positions WHERE mint = 'STALEPRICE'").get();
+  // 2 (the mocked fresh price) plus the paper slippage haircut - nowhere
+  // near 999 (the stale token.priceUsd), which is the actual point of this test.
+  assert.ok(Math.abs(row.entry_price_usd - 2.02) < 0.01, `expected ~2.02 (freshly-fetched price + slippage), not the stale token.priceUsd (999) - got ${row.entry_price_usd}`);
+});
+
 test('two overlapping exit-ticks reading the same stale position only sell once (regression: real live bug - one position sold "70% of original" 36 times in 13 minutes instead of once, because overlapping async ticks each read remaining_amount_sol before the other had written it)', async () => {
   // opened_at pushed past the bearish-exit grace period (default 90s) -
   // otherwise the grace gate added later would return before this test's

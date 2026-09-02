@@ -27,6 +27,11 @@ pumpfunApi.getSocials = async () => ({ count: 0 });
 birdeye.getTokenOverview = async () => null;
 coingecko.matchesTrending = () => true; // +10 trending pts, no mention needed
 dexscreener.isBoosted = () => true; // +10 more trending pts (cap 20), no mention needed
+// attemptEntry fetches a fresh price before buying (real bug fix - it used
+// to trust the stale discovery-time token.priceUsd instead) - mocked at
+// file scope, not per-test, so every test that reaches a real buy gets a
+// consistent price regardless of node:test's execution order.
+dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 1 });
 reddit.getSignal = () => ({ mentionCount: 0 });
 googleAlerts.getSignal = () => ({ mentionCount: 0 });
 telegramUserClient.getSignal = () => ({ mentionCount: 0 });
