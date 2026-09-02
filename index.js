@@ -15,6 +15,7 @@ const farcaster = require('./lib/farcaster');
 const telegramBot = require('./lib/telegramBot');
 const positions = require('./lib/positions');
 const evaluator = require('./lib/evaluator');
+const stats = require('./lib/stats');
 const PumpPortalStream = require('./lib/pumpPortalStream');
 
 const app = express();
@@ -49,6 +50,26 @@ app.get('/trades', (req, res) => {
 
 app.get('/positions', (req, res) => {
   res.json(positions.getOpenPositions());
+});
+
+// "Why no alerts/buys" is unanswerable from /health+/stats alone - both only
+// show OUTCOMES (trades, balance), not why candidates never became one.
+// stats.js already tracked this in memory the whole time (rejectionReasons,
+// nearMisses) but nothing ever exposed it over HTTP - only via Telegram's
+// /reasons /nearmiss commands, which this session can't read directly.
+app.get('/diagnostics', (req, res) => {
+  res.json({
+    uptimeMs: Date.now() - stats.startedAt,
+    tokensScanned: stats.tokensScanned,
+    alertsSent: stats.alertsSent,
+    recentAlerts: stats.recentAlerts,
+    rejectionReasons: stats.rejectionReasons,
+    nearMisses: stats.nearMisses,
+    pendingCandidates: evaluator.getPendingCount(),
+    autoBuyPaused: positions.isPaused(),
+    minMentionCount: config.minMentionCount,
+    scoreAlertThreshold: config.scoreAlertThreshold,
+  });
 });
 
 let pumpPortal;
