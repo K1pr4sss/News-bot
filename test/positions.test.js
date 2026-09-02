@@ -149,3 +149,24 @@ test('a mint can be manually re-bought after its first position fully closes (re
   assert.strictEqual(rows[0].status, 'closed');
   assert.strictEqual(rows[1].status, 'open');
 });
+
+test('attemptEntry (the automated path) can re-buy a mint bought earlier the same day - the 24h re-buy cooldown was removed by user request after real alerts were seen getting blocked purely on cooldown despite still scoring well (e.g. "bought within the last 24h" on a 65/100 candidate)', async () => {
+  // Earlier tests in this file leave several positions open (by design -
+  // they're testing partial-sell/race behavior, not full lifecycles), which
+  // would otherwise trip the UNRELATED maxOpenPositions guard here. Force a
+  // clean slate first - this test only cares about the re-buy cooldown gate.
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
+
+  const token = {
+    mint: 'AUTOREBUY', name: 'AutoRebuy', symbol: 'ARB', priceUsd: 1, liquidityUsd: 10000,
+  };
+  const score = { score: 60 };
+
+  const first = await positions.attemptEntry(token, score);
+  assert.strictEqual(first.ok, true, `first entry should succeed, got: ${first.reason}`);
+  const closed = await positions.attemptManualSell('AUTOREBUY');
+  assert.strictEqual(closed.ok, true, `closing the first position should succeed, got: ${closed.reason}`);
+
+  const second = await positions.attemptEntry(token, score);
+  assert.strictEqual(second.ok, true, `re-buy should not be blocked by the (now-disabled) rebuy cooldown, got: ${second.reason}`);
+});

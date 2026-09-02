@@ -69,6 +69,7 @@ app.get('/diagnostics', (req, res) => {
     autoBuyPaused: positions.isPaused(),
     minMentionCount: config.minMentionCount,
     scoreAlertThreshold: config.scoreAlertThreshold,
+    telegram: telegramUserClient.getStatus(),
   });
 });
 
