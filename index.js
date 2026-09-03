@@ -73,6 +73,13 @@ app.get('/diagnostics', (req, res) => {
   });
 });
 
+// Live, on-demand proof for "is Telegram actually working right now" -
+// separate from /diagnostics' telegram.getStatus(), which only reflects
+// captures already made this process. Queries each tracked group fresh.
+app.get('/telegram-check', async (req, res) => {
+  res.json(await telegramUserClient.checkFreshness());
+});
+
 let pumpPortal;
 
 async function discoveryTick() {
