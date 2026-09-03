@@ -73,52 +73,6 @@ app.get('/diagnostics', (req, res) => {
   });
 });
 
-// TEMPORARY, one-off data correction - see project memory for the full
-// investigation. The "pippo" trade (2026-09-02) recorded a buy at a stale
-// discovery-time price ($0.0000245) that never matched the coin's real
-// trading history; the real price at that exact buy timestamp (per
-// GeckoTerminal's own 1-min candle) was ~$0.0000926, making the real move
-// +11.8%, not the +331% the buggy entry price produced. User asked for the
-// historical record corrected, not just flagged. Removed immediately after
-// running once - this is not a standing capability.
-app.get('/admin/fix-pippo-2026-09-03', (req, res) => {
-  const mint = 'Gffw364rz4r93aYum3BHynoi5iw1gsq2m4P2Py6gpump';
-  const buggyEntryPrice = 0.000024521174686288354; // the original stale-price bug's recorded value
-  const correctedEntryPrice = 0.00009354004415180182; // real candle open at buy time * (1 + paperSlippagePct/100), same formula executor.buy() uses
-  const correctedPnl = 0.010051196545560873; // recomputed via executor.sell()'s exact formula against the (already-correct) recorded exit price
-  const correctedReason = 'take-profit tier 3 (+11.8%, corrected from a stale-price bug - real number, see project notes)';
-  const balanceDelta = 0.29551950; // old buggy pnl (0.30557069875914633) minus corrected pnl - the exact fake-profit amount to remove from the current balance
-
-  const buyRow = db.prepare("SELECT * FROM trades WHERE mint = ? AND side = 'buy'").get(mint);
-  const sellRow = db.prepare("SELECT * FROM trades WHERE mint = ? AND side = 'sell'").get(mint);
-  if (!buyRow || !sellRow) return res.status(404).json({ error: 'trades not found' });
-
-  // Idempotency guard - this already ran once (price_usd corrected already);
-  // re-running must fix the reason-string label without re-subtracting the
-  // balance delta a second time, which would silently corrupt the balance.
-  const alreadyApplied = Math.abs(buyRow.price_usd - buggyEntryPrice) > 1e-9;
-
-  db.prepare('UPDATE trades SET price_usd = ? WHERE id = ?').run(correctedEntryPrice, buyRow.id);
-  db.prepare('UPDATE trades SET realized_pnl_sol = ?, reason = ? WHERE id = ?').run(correctedPnl, correctedReason, sellRow.id);
-  db.prepare('UPDATE positions SET entry_price_usd = ? WHERE mint = ?').run(correctedEntryPrice, mint);
-
-  const walletBefore = db.prepare('SELECT balance_sol FROM paper_wallet WHERE id = 1').get();
-  let newBalance = walletBefore.balance_sol;
-  if (!alreadyApplied) {
-    newBalance = walletBefore.balance_sol - balanceDelta;
-    db.prepare('UPDATE paper_wallet SET balance_sol = ? WHERE id = 1').run(newBalance);
-  }
-
-  res.json({
-    ok: true,
-    alreadyApplied,
-    correctedEntryPrice,
-    correctedPnl,
-    balanceBefore: walletBefore.balance_sol,
-    balanceAfter: newBalance,
-  });
-});
-
 let pumpPortal;
 
 async function discoveryTick() {
