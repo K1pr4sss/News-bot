@@ -181,9 +181,53 @@ test('attemptEntry (the automated path) can re-buy a mint bought earlier the sam
 
   const first = await positions.attemptEntry(token, score);
   assert.strictEqual(first.ok, true, `first entry should succeed, got: ${first.reason}`);
+  // Close at a PROFIT specifically - this test is about the (now-disabled)
+  // blanket rebuyCooldownHours, not the separate loss-rebuy cooldown below.
+  // The file's module-level mock (priceUsd:2, ±1% slippage) would otherwise
+  // make this close a small real loss and trip that unrelated guard.
+  dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 3, liquidityUsd: 5000 });
   const closed = await positions.attemptManualSell('AUTOREBUY');
   assert.strictEqual(closed.ok, true, `closing the first position should succeed, got: ${closed.reason}`);
+  dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 2, liquidityUsd: 5000 }); // restore the file's default mock
 
   const second = await positions.attemptEntry(token, score);
   assert.strictEqual(second.ok, true, `re-buy should not be blocked by the (now-disabled) rebuy cooldown, got: ${second.reason}`);
+});
+
+test('a mint closed at a LOSS cannot be re-bought within the loss-rebuy cooldown window (regression: real live data showed "Pumpooor" bought and re-bought 9 times in one hour after the blanket cooldown was removed, losing a little almost every round trip to fees/slippage)', async () => {
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
+  const token = {
+    mint: 'LOSSREBUY', name: 'LossRebuy', symbol: 'LRB', priceUsd: 1, liquidityUsd: 10000,
+  };
+  const score = { score: 60 };
+
+  const first = await positions.attemptEntry(token, score);
+  assert.strictEqual(first.ok, true, `first entry should succeed, got: ${first.reason}`);
+  // File default mock (priceUsd:2, ±1% slippage) makes this close a real
+  // loss (sell fills at 1.98, below the 2.02 entry) - exactly what should
+  // trip the new guard.
+  const closed = await positions.attemptManualSell('LOSSREBUY');
+  assert.strictEqual(closed.ok, true, `closing the first position should succeed, got: ${closed.reason}`);
+
+  const second = await positions.attemptEntry(token, score);
+  assert.strictEqual(second.ok, false, 'a mint that just closed at a loss should not be immediately re-buyable');
+  assert.match(second.reason, /loss re-buy cooldown/);
+});
+
+test('a mint closed at a PROFIT is never touched by the loss-rebuy cooldown, even seconds later', async () => {
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
+  const token = {
+    mint: 'PROFITREBUY', name: 'ProfitRebuy', symbol: 'PRB', priceUsd: 1, liquidityUsd: 10000,
+  };
+  const score = { score: 60 };
+
+  const first = await positions.attemptEntry(token, score);
+  assert.strictEqual(first.ok, true, `first entry should succeed, got: ${first.reason}`);
+  dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 3, liquidityUsd: 5000 }); // real profit on close
+  const closed = await positions.attemptManualSell('PROFITREBUY');
+  assert.strictEqual(closed.ok, true, `closing the first position should succeed, got: ${closed.reason}`);
+  dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 2, liquidityUsd: 5000 }); // restore the file's default mock
+
+  const second = await positions.attemptEntry(token, score);
+  assert.strictEqual(second.ok, true, `a mint that closed at a real profit should be immediately re-buyable, got: ${second.reason}`);
 });
