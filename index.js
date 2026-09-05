@@ -81,6 +81,18 @@ app.get('/diagnostics', (req, res) => {
 // Live, on-demand proof for "is Telegram actually working right now" -
 // separate from /diagnostics' telegram.getStatus(), which only reflects
 // captures already made this process. Queries each tracked group fresh.
+// Real rejected candidates with the VALUES that rejected them - the data that
+// makes "should I loosen filter X" a measurable question instead of a
+// prospective experiment. ?sole=1 returns only single-blocker rows, which are
+// the only ones a threshold change would actually convert into trades.
+app.get('/rejections', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 200, 2000);
+  const rows = req.query.sole
+    ? db.prepare('SELECT * FROM rejections WHERE sole_reason IS NOT NULL ORDER BY id DESC LIMIT ?').all(limit)
+    : db.prepare('SELECT * FROM rejections ORDER BY id DESC LIMIT ?').all(limit);
+  res.json(rows);
+});
+
 app.get('/telegram-check', async (req, res) => {
   res.json(await telegramUserClient.checkFreshness());
 });
@@ -224,6 +236,14 @@ function start() {
   scheduleInterval(trendingTick, config.trendingPollIntervalMs);
   scheduleInterval(pendingTick, config.pendingCandidateRecheckIntervalMs);
   scheduleInterval(exitTick, config.exitPollIntervalMs);
+  // Keeps the rejections table bounded. At the observed ~12 candidates/min
+  // this is roughly 17k rows/day, so the retention window is what stops the
+  // Railway volume filling up over weeks.
+  scheduleInterval(async () => {
+    const cutoff = Date.now() - config.rejectionRetentionHours * 3600 * 1000;
+    const { changes } = db.prepare('DELETE FROM rejections WHERE created_at < ?').run(cutoff);
+    if (changes) logger.info('Pruned old rejection rows', { deleted: changes, retentionHours: config.rejectionRetentionHours });
+  }, 3600 * 1000);
 
   app.listen(config.port, () => logger.info(`HTTP server listening on :${config.port}`));
 }
