@@ -14,12 +14,12 @@ function insertOpenPosition(overrides = {}) {
   const base = {
     mint: 'TESTMINT', name: 'Test', symbol: 'TEST',
     entry_price_usd: 1.0, original_amount_sol: 0.1, remaining_amount_sol: 0.1,
-    entry_score: 50, opened_at: Date.now(), max_hold_minutes: 999999,
+    entry_score: 50, opened_at: Date.now(), max_hold_minutes: 999999, tp1_fired: 0,
     ...overrides,
   };
   db.prepare(`
-    INSERT INTO positions (mint, name, symbol, entry_price_usd, original_amount_sol, remaining_amount_sol, entry_score, opened_at, max_hold_minutes)
-    VALUES (@mint, @name, @symbol, @entry_price_usd, @original_amount_sol, @remaining_amount_sol, @entry_score, @opened_at, @max_hold_minutes)
+    INSERT INTO positions (mint, name, symbol, entry_price_usd, original_amount_sol, remaining_amount_sol, entry_score, opened_at, max_hold_minutes, tp1_fired)
+    VALUES (@mint, @name, @symbol, @entry_price_usd, @original_amount_sol, @remaining_amount_sol, @entry_score, @opened_at, @max_hold_minutes, @tp1_fired)
   `).run(base);
   return db.prepare('SELECT * FROM positions WHERE mint = ?').get(base.mint);
 }
@@ -43,25 +43,48 @@ test('stop-loss at -20% closes the full remaining position', async () => {
   assert.strictEqual(row.status, 'closed');
 });
 
-test('stop-loss still fires immediately within the bearish-exit grace period (grace only shields the score/volume ladder, never real risk protection)', async () => {
-  const pos = insertOpenPosition({ mint: 'SLGRACE', opened_at: Date.now() }); // brand new, well inside the 90s grace window
+test('stop-loss still fires immediately inside the thesis-cut window (the cut delay must never delay real risk protection)', async () => {
+  const pos = insertOpenPosition({ mint: 'SLGRACE', opened_at: Date.now() }); // brand new, well inside the 10min window
   await positions.evaluateExit(pos, { priceUsd: 0.79 }, flatScore); // -21%
   const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('SLGRACE');
-  assert.strictEqual(row.status, 'closed', 'stop-loss must not be delayed by the bearish-exit grace period');
+  assert.strictEqual(row.status, 'closed', 'stop-loss must not be delayed by the thesis-cut timer');
 });
 
-test('bearish score-exit ladder is held off within the grace period (regression: real live data showed 10/12 losing trades held only 19-35s - a near-threshold entry earns most of its score from a volume spike that fades by the very next exit-tick poll, killing the position before price has any chance to move) then fires once the grace period passes', async () => {
-  const dyingScore = { score: 10, volumeRatio: 3 }; // clearly below the 40 exit threshold
-  const freshPos = insertOpenPosition({ mint: 'GRACE1', opened_at: Date.now() }); // 0s old
-  await positions.evaluateExit(freshPos, { priceUsd: 1.0 }, dyingScore); // flat price - isolates the score-exit branch
-  const stillOpen = db.prepare('SELECT * FROM positions WHERE mint = ?').get('GRACE1');
-  assert.strictEqual(stillOpen.status, 'open', 'should not have sold yet - still inside the grace period');
-  assert.strictEqual(stillOpen.score_exit_fired, 0);
+// Replaces the old "bearish score-exit ladder" tests. That ladder killed 90%
+// of all real positions (112/125, -0.443 SOL) because it fired off an absolute
+// score threshold that transient volume-spike decay guaranteed would be
+// crossed - 92% of its exits landed within 30s of the grace period expiring,
+// making it a timer rather than a signal. These three tests pin the properties
+// that actually distinguish the replacement.
+test('thesis cut does NOT fire on a position that is UP, no matter how far the hype score has fallen', async () => {
+  const deadScore = { score: 0, volumeRatio: 0 }; // total score collapse - the old ladder would have sold instantly
+  const pos = insertOpenPosition({ mint: 'WINNER', opened_at: Date.now() - 60 * 60 * 1000 }); // an hour old, well past the cut delay
+  await positions.evaluateExit(pos, { priceUsd: 1.25 }, deadScore); // +25%, below the +30% tier-1 trigger
+  const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('WINNER');
+  assert.strictEqual(row.status, 'open', 'a profitable position must survive a score collapse - this precondition is the whole fix');
+  assert.ok(Math.abs(row.remaining_amount_sol - 0.1) < 1e-9, 'nothing should have been sold');
+});
 
-  const agedPos = { ...stillOpen, opened_at: Date.now() - 100 * 1000 }; // 100s old - past the 90s default grace
-  await positions.evaluateExit(agedPos, { priceUsd: 1.0 }, dyingScore);
-  const nowSold = db.prepare('SELECT * FROM positions WHERE mint = ?').get('GRACE1');
-  assert.strictEqual(nowSold.score_exit_fired, 1, 'should have sold once the grace period passed');
+test('thesis cut is held off until the cut delay, then closes the position in ONE sell', async () => {
+  const fresh = insertOpenPosition({ mint: 'CUT1', opened_at: Date.now() }); // 0min old
+  await positions.evaluateExit(fresh, { priceUsd: 0.95 }, flatScore); // -5%, losing but too young
+  const stillOpen = db.prepare('SELECT * FROM positions WHERE mint = ?').get('CUT1');
+  assert.strictEqual(stillOpen.status, 'open', 'should not cut before thesisCutAfterMinutes');
+
+  const aged = { ...stillOpen, opened_at: Date.now() - 11 * 60 * 1000 }; // 11min old, past the 10min default
+  await positions.evaluateExit(aged, { priceUsd: 0.95 }, flatScore);
+  const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('CUT1');
+  assert.strictEqual(row.status, 'closed');
+  assert.strictEqual(row.remaining_amount_sol, 0);
+  const sells = db.prepare("SELECT * FROM trades WHERE mint = ? AND side = 'sell'").all('CUT1');
+  assert.strictEqual(sells.length, 1, 'must close in a single sell - the old 70%-then-30% two-step burned an extra fee leg on every loser');
+});
+
+test('thesis cut leaves a position alone once a take-profit tier has fired', async () => {
+  const pos = insertOpenPosition({ mint: 'CUT2', opened_at: Date.now() - 30 * 60 * 1000, tp1_fired: 1 });
+  await positions.evaluateExit(pos, { priceUsd: 0.95 }, flatScore); // losing, old enough, but already banking gains
+  const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('CUT2');
+  assert.strictEqual(row.status, 'open', 'a position that already took profit is judged by the take-profit/stop-loss ladder, not the cut');
 });
 
 test('take-profit ladder walks tier1 -> tier2 -> tier3 to fully closed', async () => {
@@ -106,9 +129,11 @@ test('attemptEntry buys at a FRESH price, not the stale one carried on the token
 });
 
 test('two overlapping exit-ticks reading the same stale position only sell once (regression: real live bug - one position sold "70% of original" 36 times in 13 minutes instead of once, because overlapping async ticks each read remaining_amount_sol before the other had written it)', async () => {
-  // opened_at pushed past the bearish-exit grace period (default 90s) -
-  // otherwise the grace gate added later would return before this test's
-  // score-exit branch ever ran, unrelated to the race condition being tested.
+  // Driven through take-profit tier 1 rather than the old bearish score-exit,
+  // which no longer exists (see the thesis-cut tests above). Deliberately a
+  // PARTIAL sell: a full close would leave remaining at 0 either way, which
+  // would let a genuinely broken CAS still pass this test. A 50% slice sold
+  // twice lands at a visibly wrong remaining, so the assertion has teeth.
   const pos = insertOpenPosition({
     mint: 'RACE', original_amount_sol: 0.05, remaining_amount_sol: 0.05, opened_at: Date.now() - 200 * 1000,
   });
@@ -119,17 +144,43 @@ test('two overlapping exit-ticks reading the same stale position only sell once 
   const snapshotB = { ...pos };
 
   await Promise.all([
-    // priceUsd === entry price (0% change) so neither stop-loss nor take-profit
-    // fires first - isolates the score-exit branch (score < 40 -> sell 70% of original).
-    positions.evaluateExit(snapshotA, { priceUsd: 1.0 }, { score: 10, volumeRatio: 3 }),
-    positions.evaluateExit(snapshotB, { priceUsd: 1.0 }, { score: 10, volumeRatio: 3 }),
+    // +30% - both snapshots see tp1_fired=0 and both reach sellFraction, so the
+    // compare-and-swap in sellFraction is the only thing preventing a double sell.
+    positions.evaluateExit(snapshotA, { priceUsd: 1.30 }, flatScore),
+    positions.evaluateExit(snapshotB, { priceUsd: 1.30 }, flatScore),
   ]);
 
   const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('RACE');
-  // 70% of 0.05 = 0.035 sold ONCE, not twice - remaining should be 0.015, not -0.02.
-  assert.ok(Math.abs(row.remaining_amount_sol - 0.015) < 1e-9, `expected 0.015 remaining after exactly one 70% sell, got ${row.remaining_amount_sol}`);
+  // 50% of 0.05 = 0.025 sold ONCE, not twice - remaining should be 0.025, not 0.
+  assert.ok(Math.abs(row.remaining_amount_sol - 0.025) < 1e-9, `expected 0.025 remaining after exactly one 50% sell, got ${row.remaining_amount_sol}`);
   const sells = db.prepare("SELECT * FROM trades WHERE mint = 'RACE' AND side = 'sell'").all();
   assert.strictEqual(sells.length, 1, `expected exactly 1 recorded sell, got ${sells.length}`);
+});
+
+test('realized P&L accounts for the BUY-side fee too (regression: reported P&L and the real wallet balance disagreed by exactly one paperFeeSol per position - 0.125 SOL across 125 real positions - because executor.sell only netted the sell-side fee, hiding half the account\'s true loss)', async () => {
+  const before = executor.getBalanceSol();
+  // entry_price_usd matches what the mocked dexscreener returns, so this is a
+  // FLAT round trip: with zero price movement the only thing P&L can reflect
+  // is friction - both fee legs plus the slippage haircut - which makes a
+  // missing fee show up as a clean, unambiguous discrepancy.
+  const pos = insertOpenPosition({
+    mint: 'FEEACCT', entry_price_usd: 2, original_amount_sol: 0.1, remaining_amount_sol: 0.1,
+  });
+  await positions.attemptManualSell('FEEACCT');
+  const sells = db.prepare("SELECT * FROM trades WHERE mint = 'FEEACCT' AND side = 'sell'").all();
+  assert.strictEqual(sells.length, 1);
+
+  // The buy leg was inserted directly by the test helper, so simulate only the
+  // sell side's effect on the balance and check P&L reconciles against it.
+  const balanceDelta = executor.getBalanceSol() - before;
+  const reported = sells[0].realized_pnl_sol;
+  // proceeds credited to the wallet = cost + reportedPnl + buyFeeShare, i.e.
+  // the reported figure must be one full buy fee BELOW the raw wallet movement.
+  assert.ok(
+    Math.abs((balanceDelta - 0.1) - (reported + 0.001)) < 1e-9,
+    `reported P&L (${reported}) should be exactly one buy fee below the wallet's own accounting (${balanceDelta - 0.1})`,
+  );
+  assert.ok(reported < 0, 'a flat round trip must show a LOSS once both fee legs and slippage are counted');
 });
 
 test('two overlapping entry-ticks evaluating the same brand-new mint only buy once (regression: attemptEntry\'s hasOpenPosition check was synchronous but executor.buy() was awaited before the position row existed to check against, so e.g. discoveryTick and pendingTick could both pass the check for the same mint moments apart and each independently buy)', async () => {
