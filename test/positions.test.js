@@ -80,11 +80,21 @@ test('thesis cut is held off until the cut delay, then closes the position in ON
   assert.strictEqual(sells.length, 1, 'must close in a single sell - the old 70%-then-30% two-step burned an extra fee leg on every loser');
 });
 
-test('thesis cut leaves a position alone once a take-profit tier has fired', async () => {
-  const pos = insertOpenPosition({ mint: 'CUT2', opened_at: Date.now() - 30 * 60 * 1000, tp1_fired: 1 });
-  await positions.evaluateExit(pos, { priceUsd: 0.95 }, flatScore); // losing, old enough, but already banking gains
-  const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('CUT2');
-  assert.strictEqual(row.status, 'open', 'a position that already took profit is judged by the take-profit/stop-loss ladder, not the cut');
+test('the thesis cut never fires on a position that has banked a take-profit - the breakeven stop governs it instead', async () => {
+  // A position that took profit and is now UP stays open: the cut is skipped
+  // (tp1_fired) and it is above the breakeven stop.
+  const up = insertOpenPosition({ mint: 'CUT2', opened_at: Date.now() - 30 * 60 * 1000, tp1_fired: 1 });
+  await positions.evaluateExit(up, { priceUsd: 1.10 }, flatScore);
+  assert.strictEqual(db.prepare('SELECT * FROM positions WHERE mint = ?').get('CUT2').status, 'open');
+
+  // Below breakeven it closes - but via the breakeven stop, NOT the thesis cut,
+  // and that distinction is the point: it would close even if it were brand new.
+  const down = insertOpenPosition({ mint: 'CUT3', opened_at: Date.now(), tp1_fired: 1 });
+  await positions.evaluateExit(down, { priceUsd: 0.95 }, flatScore);
+  const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('CUT3');
+  assert.strictEqual(row.status, 'closed');
+  const sells = db.prepare("SELECT reason FROM trades WHERE mint = 'CUT3' AND side = 'sell'").all();
+  assert.ok(/breakeven stop/.test(sells[0].reason), `expected the breakeven stop, not the cut - got: ${sells[0].reason}`);
 });
 
 // index.js's exitTick now calls evaluateExit with price ONLY - no score - so
@@ -116,6 +126,9 @@ test('every exit rule works with price alone, no hype score supplied (the shape 
 // 13 filled above the bar's HIGH entirely. On a bot whose round-trip friction
 // is already ~6%, that is indefensible regardless of strategy.
 test('does not chase - skips the buy when the price ran away between evaluation and execution', async () => {
+  // maxOpenPositions is now 3 (raised sizing, held exposure flat), so earlier
+  // tests leaving positions open can exhaust the budget before this one runs.
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
   // Snapshot and restore: the accepting cases below really do buy, and the
   // sizing test later in this file asserts against an exact paper balance.
   const balanceBefore = executor.getBalanceSol();
@@ -142,6 +155,37 @@ test('does not chase - skips the buy when the price ran away between evaluation 
   db.prepare('UPDATE paper_wallet SET balance_sol = ? WHERE id = 1').run(balanceBefore);
 });
 
+// The single worst hole in the payoff arithmetic: the ladder sells only 50% at
+// +30%, so a coin that WORKS and then reverses nets about -1% of position
+// because the unsold half rides to a stop that really fills near -28%. Real
+// cases: phantom took +48% then stopped at -44.3%; UMI took +30% and +62% then
+// stopped at -29%. Worth +0.0117 SOL and +3pp win rate across 108 replayed
+// positions.
+test('once a take-profit has fired, the remainder is protected at breakeven instead of riding to the full stop', async () => {
+  const pos = insertOpenPosition({ mint: 'BE1' });
+  await positions.evaluateExit(pos, { priceUsd: 1.30 }); // +30% -> tier 1 banks half
+  const afterTp = db.prepare('SELECT * FROM positions WHERE mint = ?').get('BE1');
+  assert.strictEqual(afterTp.tp1_fired, 1);
+  assert.strictEqual(afterTp.status, 'open');
+
+  // -5% would be nowhere near the -20% rule, but it IS below breakeven, so the
+  // protected remainder must close rather than ride back down.
+  await positions.evaluateExit(afterTp, { priceUsd: 0.95 });
+  const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('BE1');
+  assert.strictEqual(row.status, 'closed', 'a banked winner must not be allowed to become a loser');
+  const sells = db.prepare("SELECT reason FROM trades WHERE mint = 'BE1' AND side = 'sell'").all();
+  assert.ok(/breakeven stop/.test(sells[sells.length - 1].reason), `expected a breakeven-stop exit, got: ${sells[sells.length - 1].reason}`);
+});
+
+test('the breakeven stop does NOT apply before any take-profit has fired', async () => {
+  const pos = insertOpenPosition({ mint: 'BE2', opened_at: Date.now() });
+  // -5%, losing but nothing banked yet and too young for the thesis cut:
+  // the full -20% stop still governs, so this must stay open.
+  await positions.evaluateExit(pos, { priceUsd: 0.95 });
+  const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('BE2');
+  assert.strictEqual(row.status, 'open', 'an unproven position keeps the full stop, not the breakeven one');
+});
+
 test('take-profit ladder walks tier1 -> tier2 -> tier3 to fully closed', async () => {
   const pos1 = insertOpenPosition({ mint: 'LADDER' });
   await positions.evaluateExit(pos1, { priceUsd: 1.30 }, flatScore); // tier1: -50%
@@ -156,6 +200,9 @@ test('take-profit ladder walks tier1 -> tier2 -> tier3 to fully closed', async (
 });
 
 test('entry sizing matches the score-band table against live paper balance', async () => {
+  // maxOpenPositions is now 3 (raised sizing, held exposure flat), so earlier
+  // tests leaving positions open can exhaust the budget before this one runs.
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
   const balanceBefore = executor.getBalanceSol();
   const entry = await positions.attemptEntry(
     { mint: 'ENTRY1', name: 'Entry', symbol: 'ENT', priceUsd: 2, liquidityUsd: 10000 },
