@@ -113,14 +113,46 @@ async function pendingTick() {
   }
 }
 
+/**
+ * Price-only, and every open position checked CONCURRENTLY. Both of those are
+ * deliberate, and both come from measured damage (2026-09-05).
+ *
+ * This used to call evaluator.getLiveTokenAndScore per position, which makes a
+ * GeckoTerminal getPoolsForToken call on the shared ~30 req/min queue - and it
+ * did so SEQUENTIALLY, so N open positions meant N x 2.1s of queue spacing
+ * before the last one was even looked at, on top of whatever backlog
+ * discovery/trending/pending had already put in front of it.
+ *
+ * What that cost, from the 7 real stop-losses: 5 of them were LATENCY, not
+ * price gapping. UNSTABLE's low touched -20.8% and it sold 171s later at
+ * -24.1%. Dark Arena breached -25.2% and sold 157s later at -90.8%.
+ * Filling every stop at the actual -20% level instead of where they really
+ * landed would have been worth 0.125 SOL - roughly HALF the account's entire
+ * -0.268 SOL loss, from latency alone.
+ *
+ * The GeckoTerminal call is now unnecessary rather than merely expensive: the
+ * old bearish score/volume ladder was the only exit rule that read the score,
+ * and it's gone. Stop-loss, take-profit, max-hold and the thesis cut all key
+ * on price and elapsed time only, and price comes from DexScreener, which is
+ * not on that queue. So the whole risk path is now one fast independent HTTP
+ * call per position, running in parallel - no shared queue, no head-of-line
+ * blocking behind tokens nobody owns.
+ */
 async function exitTick() {
   try {
     const open = positions.getOpenPositions();
-    for (const position of open) {
-      const result = await evaluator.getLiveTokenAndScore(position);
-      if (!result) continue;
-      await positions.evaluateExit(position, result.liveToken, result.scoreResult);
-    }
+    if (!open.length) return;
+    await Promise.all(open.map(async (position) => {
+      try {
+        const priceInfo = await dexscreener.getTokenPriceUsd(position.mint);
+        if (!priceInfo) return;
+        await positions.evaluateExit(position, { priceUsd: priceInfo.priceUsd });
+      } catch (err) {
+        // Per-position catch: one unreadable mint must not abort the exit
+        // check for every OTHER open position in the same tick.
+        logger.error('Exit check failed for a position', { mint: position.mint, error: err.message });
+      }
+    }));
   } catch (err) {
     logger.error('Exit tick failed', { error: err.message });
   }

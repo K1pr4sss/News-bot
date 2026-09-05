@@ -63,3 +63,41 @@ test('pending-candidate retry queue: queues on improvable failure, graduates onc
   await freshEvaluator.pendingCandidatesTick();
   assert.strictEqual(freshEvaluator.getPendingCount(), 0);
 });
+
+// The retry loop used to make one GeckoTerminal call per pending candidate per
+// tick. At the real observed queue depth (~76) that schedules ~160s of
+// rate-limited work every 90s, so the queue can never drain - it just grows,
+// eating the shared budget. The momentum gate makes this sharply worse because
+// "not moving yet" is an improvable reason, so most rejects now land here.
+test('pending retry is batched per tick and rotates by least-recently-checked, so a deep queue cannot monopolise the rate-limited budget', async () => {
+  process.env.PENDING_CANDIDATE_MAX_AGE_MINUTES = '60';
+  process.env.PENDING_RECHECK_BATCH_SIZE = '5';
+  delete require.cache[require.resolve('../lib/config')];
+  delete require.cache[require.resolve('../lib/evaluator')];
+  // eslint-disable-next-line global-require
+  const ev = require('../lib/evaluator');
+  rugcheck.getFullReport = async () => cleanRugcheck;
+
+  for (let i = 0; i < 20; i++) await ev.evaluateCandidate(thinToken('DEEP' + i)); // eslint-disable-line no-await-in-loop
+  assert.strictEqual(ev.getPendingCount(), 20);
+
+  // Count real lookups, and keep every candidate failing so none graduate out
+  // and change the queue size underneath the assertions.
+  const seen = [];
+  geckoterminal.getPoolsForToken = async (mint) => { seen.push(mint); return [thinToken(mint, { liquidityUsd: 100 })]; };
+
+  await ev.pendingCandidatesTick();
+  assert.strictEqual(seen.length, 5, `batch cap must hold the tick to 5 lookups, got ${seen.length}`);
+  assert.strictEqual(ev.getPendingCount(), 20, 'still-failing candidates stay queued');
+
+  // Second tick must move on to a DIFFERENT five - if it re-checked the same
+  // head of the queue, the tail would never be looked at again.
+  const firstFive = [...seen];
+  seen.length = 0;
+  await ev.pendingCandidatesTick();
+  assert.strictEqual(seen.length, 5);
+  assert.strictEqual(
+    firstFive.filter((m) => seen.includes(m)).length, 0,
+    `second tick must rotate to unchecked candidates, but repeated: ${seen.filter((m) => firstFive.includes(m)).join(',')}`,
+  );
+});

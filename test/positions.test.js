@@ -87,6 +87,30 @@ test('thesis cut leaves a position alone once a take-profit tier has fired', asy
   assert.strictEqual(row.status, 'open', 'a position that already took profit is judged by the take-profit/stop-loss ladder, not the cut');
 });
 
+// index.js's exitTick now calls evaluateExit with price ONLY - no score - so
+// it can skip the rate-limited GeckoTerminal lookup that was costing 0.125 SOL
+// in stop-loss latency (5 of 7 real stops fired late, not on a price gap; Dark
+// Arena breached -25% and sold 157s later at -90.8%). Every exit rule must
+// therefore work with no score in hand.
+test('every exit rule works with price alone, no hype score supplied (the shape exitTick actually calls)', async () => {
+  const sl = insertOpenPosition({ mint: 'NOSCORE_SL' });
+  await positions.evaluateExit(sl, { priceUsd: 0.79 }); // -21%, no third argument at all
+  assert.strictEqual(db.prepare('SELECT * FROM positions WHERE mint = ?').get('NOSCORE_SL').status, 'closed');
+
+  const tp = insertOpenPosition({ mint: 'NOSCORE_TP' });
+  await positions.evaluateExit(tp, { priceUsd: 1.30 }); // +30%
+  assert.strictEqual(db.prepare('SELECT * FROM positions WHERE mint = ?').get('NOSCORE_TP').tp1_fired, 1);
+
+  const cut = insertOpenPosition({ mint: 'NOSCORE_CUT', opened_at: Date.now() - 11 * 60 * 1000 });
+  await positions.evaluateExit(cut, { priceUsd: 0.95 }); // losing, past the cut delay
+  assert.strictEqual(db.prepare('SELECT * FROM positions WHERE mint = ?').get('NOSCORE_CUT').status, 'closed');
+
+  // and the recorded score is a clean null rather than the string "undefined"
+  const sells = db.prepare("SELECT score FROM trades WHERE mint = 'NOSCORE_CUT' AND side = 'sell'").all();
+  assert.strictEqual(sells.length, 1);
+  assert.strictEqual(sells[0].score, null);
+});
+
 test('take-profit ladder walks tier1 -> tier2 -> tier3 to fully closed', async () => {
   const pos1 = insertOpenPosition({ mint: 'LADDER' });
   await positions.evaluateExit(pos1, { priceUsd: 1.30 }, flatScore); // tier1: -50%
