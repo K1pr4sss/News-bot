@@ -93,6 +93,42 @@ app.get('/rejections', (req, res) => {
   res.json(rows);
 });
 
+// "Are all the socials actually tracked?" - previously unanswerable without
+// reading logs. Every mention source fails CLOSED (returns 0 mentions) when it
+// is unconfigured, out of quota, out of prepaid credit, or erroring - which is
+// byte-for-byte identical to "nobody is talking about this coin". Since the
+// entry gate requires at least one real mention, a silently dead source
+// narrows the funnel invisibly. This makes each one state its own health.
+app.get('/sources', (req, res) => {
+  const yt = youtube.getStatus();
+  const tw = twitter.getStatus();
+  const fc = farcaster.getStatus();
+  const tg = telegramUserClient.getStatus();
+  res.json({
+    note: 'every source degrades to 0 mentions rather than erroring - check configured/lastSuccessAt, not just the count',
+    mentionSources: {
+      telegramAlphaGroups: {
+        configured: tg.configured, connected: tg.connected, trackedGroups: tg.trackedGroups, recentMessageCount: tg.recentMessageCount,
+      },
+      youtube: yt,
+      xTwitter: tw,
+      farcaster: fc,
+      googleAlerts: { configured: config.googleAlertsRssUrls.length > 0, feedCount: config.googleAlertsRssUrls.length },
+      reddit: { configured: !!(config.redditClientId && config.redditClientSecret) },
+    },
+    // The sentiment category is worth 10 points and reads positiveRatio, which
+    // ONLY Reddit produces. With Reddit unconfigured it is permanently 0, so
+    // the real ceiling is 90/100 while the 40/55/70 sizing bands are still
+    // calibrated against 100.
+    scoringCeiling: {
+      nominalMax: 100,
+      sentimentReachable: !!(config.redditClientId && config.redditClientSecret),
+      effectiveMax: (config.redditClientId && config.redditClientSecret) ? 100 : 90,
+    },
+    entryGate: { minMentionCount: config.minMentionCount, scoreAlertThreshold: config.scoreAlertThreshold },
+  });
+});
+
 app.get('/telegram-check', async (req, res) => {
   res.json(await telegramUserClient.checkFreshness());
 });
