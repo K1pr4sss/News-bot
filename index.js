@@ -64,6 +64,11 @@ app.get('/diagnostics', (req, res) => {
     alertsSent: stats.alertsSent,
     recentAlerts: stats.recentAlerts,
     rejectionReasons: stats.rejectionReasons,
+    // The one that actually answers "which filter is costing us trades" -
+    // rejectionReasons above double-counts every candidate that failed more
+    // than one filter, so a big number there doesn't mean that filter is the
+    // binding constraint. See stats.recordRejection.
+    soleRejectionReasons: stats.soleRejectionReasons,
     nearMisses: stats.nearMisses,
     pendingCandidates: evaluator.getPendingCount(),
     autoBuyPaused: positions.isPaused(),
