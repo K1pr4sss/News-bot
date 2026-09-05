@@ -111,9 +111,30 @@ async function discoveryTick() {
   }
 }
 
+/**
+ * Polls every configured trending WINDOW, not just GeckoTerminal's 24h default
+ * (see geckoterminal.getTrendingPools). The short windows are where coins that
+ * are running right now show up - the profile the entry data says actually
+ * makes money - and nothing else in this bot could see them: new_pools is
+ * 2-minute-old tokens that no safety filter passes, and the 24h list is
+ * nine-day-old coins with no live momentum.
+ *
+ * Cost is one extra batched call per window per tick, ~0.4/min at the default
+ * 5-minute interval - negligible against the ~25/min GeckoTerminal budget, and
+ * nothing like the per-token flood that had to be removed on 2026-09-02.
+ * Deduped across windows so a coin trending on several doesn't get evaluated
+ * (and rate-limited against) several times per tick.
+ */
 async function trendingTick() {
   try {
-    const pools = await geckoterminal.getTrendingPools();
+    const seen = new Set();
+    const pools = [];
+    for (const duration of config.trendingDurations) {
+      // eslint-disable-next-line no-await-in-loop
+      const batch = await geckoterminal.getTrendingPools(duration);
+      for (const p of batch) if (!seen.has(p.mint)) { seen.add(p.mint); pools.push(p); }
+    }
+    logger.debug('Trending tick', { windows: config.trendingDurations.length, uniqueCandidates: pools.length });
     for (const token of pools) {
       await evaluator.evaluateCandidate(token, { trendingPool: true });
     }
