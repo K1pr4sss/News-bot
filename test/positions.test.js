@@ -111,6 +111,37 @@ test('every exit rule works with price alone, no hype score supplied (the shape 
   assert.strictEqual(sells[0].score, null);
 });
 
+// Real measured cost of not having this guard: across 13 live entries, fills
+// averaged 5.7% ABOVE the market bar's open on top of the 1% slippage, and 3 of
+// 13 filled above the bar's HIGH entirely. On a bot whose round-trip friction
+// is already ~6%, that is indefensible regardless of strategy.
+test('does not chase - skips the buy when the price ran away between evaluation and execution', async () => {
+  // Snapshot and restore: the accepting cases below really do buy, and the
+  // sizing test later in this file asserts against an exact paper balance.
+  const balanceBefore = executor.getBalanceSol();
+
+  // evaluated at 1.0, executing at 2.0 = +100% drift, far over the 3% cap
+  const ran = await positions.attemptEntry({ mint: 'CHASE1', name: 'x', symbol: 'x', priceUsd: 1.0 }, { score: 50 });
+  assert.strictEqual(ran.ok, false);
+  assert.ok(/not chasing/.test(ran.reason), `expected a chase rejection, got: ${ran.reason}`);
+  assert.ok(!db.prepare("SELECT 1 FROM positions WHERE mint = 'CHASE1'").get(), 'no position may be opened');
+
+  // For the accepting cases, assert on the GUARD specifically rather than on
+  // ok:true - other unrelated gates (max open positions, balance) depend on
+  // whatever earlier tests in this file happened to leave behind, and this
+  // test is about the drift check, not about them.
+  const ok = await positions.attemptEntry({ mint: 'CHASE2', name: 'x', symbol: 'x', priceUsd: 1.98 }, { score: 50 });
+  assert.ok(!/not chasing/.test(ok.reason || ''), `a small upward drift inside the cap must not trip the guard, got: ${ok.reason}`);
+
+  // a price that MOVED DOWN since evaluation is the good case - never blocked
+  const cheaper = await positions.attemptEntry({ mint: 'CHASE3', name: 'x', symbol: 'x', priceUsd: 99 }, { score: 50 });
+  assert.ok(!/not chasing/.test(cheaper.reason || ''), `a cheaper price must never trip the guard, got: ${cheaper.reason}`);
+
+  db.prepare("DELETE FROM positions WHERE mint IN ('CHASE1','CHASE2','CHASE3')").run();
+  db.prepare("DELETE FROM trades WHERE mint IN ('CHASE1','CHASE2','CHASE3')").run();
+  db.prepare('UPDATE paper_wallet SET balance_sol = ? WHERE id = 1').run(balanceBefore);
+});
+
 test('take-profit ladder walks tier1 -> tier2 -> tier3 to fully closed', async () => {
   const pos1 = insertOpenPosition({ mint: 'LADDER' });
   await positions.evaluateExit(pos1, { priceUsd: 1.30 }, flatScore); // tier1: -50%
@@ -127,7 +158,7 @@ test('take-profit ladder walks tier1 -> tier2 -> tier3 to fully closed', async (
 test('entry sizing matches the score-band table against live paper balance', async () => {
   const balanceBefore = executor.getBalanceSol();
   const entry = await positions.attemptEntry(
-    { mint: 'ENTRY1', name: 'Entry', symbol: 'ENT', priceUsd: 1, liquidityUsd: 10000 },
+    { mint: 'ENTRY1', name: 'Entry', symbol: 'ENT', priceUsd: 2, liquidityUsd: 10000 },
     { score: 60 }, // 55-70 band -> 10%
   );
   assert.strictEqual(entry.ok, true);
@@ -208,7 +239,7 @@ test('realized P&L accounts for the BUY-side fee too (regression: reported P&L a
 });
 
 test('two overlapping entry-ticks evaluating the same brand-new mint only buy once (regression: attemptEntry\'s hasOpenPosition check was synchronous but executor.buy() was awaited before the position row existed to check against, so e.g. discoveryTick and pendingTick could both pass the check for the same mint moments apart and each independently buy)', async () => {
-  const token = { mint: 'DOUBLEBUY', name: 'Double', symbol: 'DBL', priceUsd: 1, liquidityUsd: 10000 };
+  const token = { mint: 'DOUBLEBUY', name: 'Double', symbol: 'DBL', priceUsd: 2, liquidityUsd: 10000 };
   const score = { score: 60 };
 
   const [resultA, resultB] = await Promise.all([
@@ -250,7 +281,7 @@ test('attemptEntry (the automated path) can re-buy a mint bought earlier the sam
   db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
 
   const token = {
-    mint: 'AUTOREBUY', name: 'AutoRebuy', symbol: 'ARB', priceUsd: 1, liquidityUsd: 10000,
+    mint: 'AUTOREBUY', name: 'AutoRebuy', symbol: 'ARB', priceUsd: 2, liquidityUsd: 10000,
   };
   const score = { score: 60 };
 
@@ -272,7 +303,7 @@ test('attemptEntry (the automated path) can re-buy a mint bought earlier the sam
 test('a mint closed at a LOSS cannot be re-bought within the loss-rebuy cooldown window (regression: real live data showed "Pumpooor" bought and re-bought 9 times in one hour after the blanket cooldown was removed, losing a little almost every round trip to fees/slippage)', async () => {
   db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
   const token = {
-    mint: 'LOSSREBUY', name: 'LossRebuy', symbol: 'LRB', priceUsd: 1, liquidityUsd: 10000,
+    mint: 'LOSSREBUY', name: 'LossRebuy', symbol: 'LRB', priceUsd: 2, liquidityUsd: 10000,
   };
   const score = { score: 60 };
 
@@ -292,7 +323,7 @@ test('a mint closed at a LOSS cannot be re-bought within the loss-rebuy cooldown
 test('a mint closed at a PROFIT is never touched by the loss-rebuy cooldown, even seconds later', async () => {
   db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
   const token = {
-    mint: 'PROFITREBUY', name: 'ProfitRebuy', symbol: 'PRB', priceUsd: 1, liquidityUsd: 10000,
+    mint: 'PROFITREBUY', name: 'ProfitRebuy', symbol: 'PRB', priceUsd: 2, liquidityUsd: 10000,
   };
   const score = { score: 60 };
 
