@@ -186,6 +186,39 @@ test('the breakeven stop does NOT apply before any take-profit has fired', async
   assert.strictEqual(row.status, 'open', 'an unproven position keeps the full stop, not the breakeven one');
 });
 
+// The single most damaging pattern across all 145 historical positions: after
+// the first attempt at a mint, the win rate collapses to ~0 (81 re-buys, ONE
+// winner between them). OTC was bought 20x and never won. Capping at one per
+// mint would have moved the account from -0.420 to -0.031 SOL and cut 419 trade
+// legs to 183 - which matters doubly, since flat fees (0.419 SOL) account for
+// essentially the entire historical loss.
+test('a mint cannot be bought twice in a day - re-buys of the same coin have a ~0% win rate', async () => {
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
+  const balanceBefore = executor.getBalanceSol();
+  const token = { mint: 'ONEPERDAY', name: 'x', symbol: 'OPD', priceUsd: 2, liquidityUsd: 10000 };
+
+  const first = await positions.attemptEntry(token, { score: 50 });
+  assert.strictEqual(first.ok, true, `first entry should succeed, got: ${first.reason}`);
+
+  // Close it at a PROFIT, so neither the loss-cooldown nor the open-position
+  // guard can be what blocks the second attempt - it has to be this cap.
+  dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 4, liquidityUsd: 5000 });
+  await positions.attemptManualSell('ONEPERDAY');
+  assert.ok(
+    db.prepare("SELECT realized_pnl_sol FROM trades WHERE mint='ONEPERDAY' AND side='sell'").get().realized_pnl_sol > 0,
+    'setup: the close must be profitable for this test to prove what it claims',
+  );
+  dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 2, liquidityUsd: 5000 });
+
+  const second = await positions.attemptEntry(token, { score: 50 });
+  assert.strictEqual(second.ok, false, 'a second position in the same mint must be blocked even after a WINNING close');
+  assert.ok(/position\(s\) in this mint today/.test(second.reason), `expected the per-mint cap, got: ${second.reason}`);
+
+  db.prepare("DELETE FROM positions WHERE mint = 'ONEPERDAY'").run();
+  db.prepare("DELETE FROM trades WHERE mint = 'ONEPERDAY'").run();
+  db.prepare('UPDATE paper_wallet SET balance_sol = ? WHERE id = 1').run(balanceBefore);
+});
+
 test('take-profit ladder walks tier1 -> tier2 -> tier3 to fully closed', async () => {
   const pos1 = insertOpenPosition({ mint: 'LADDER' });
   await positions.evaluateExit(pos1, { priceUsd: 1.30 }, flatScore); // tier1: -50%
@@ -344,7 +377,19 @@ test('attemptEntry (the automated path) can re-buy a mint bought earlier the sam
   dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 2, liquidityUsd: 5000 }); // restore the file's default mock
 
   const second = await positions.attemptEntry(token, score);
-  assert.strictEqual(second.ok, true, `re-buy should not be blocked by the (now-disabled) rebuy cooldown, got: ${second.reason}`);
+  // The blanket rebuyCooldownHours is still disabled and must not be what
+  // blocks this. But a re-buy IS now blocked, by maxPositionsPerMintPerDay -
+  // and that supersedes the earlier decision to allow same-day re-buys, on
+  // evidence rather than preference. Reviewing all 145 historical positions:
+  // 81 re-buys produced ONE winner, and the specific case that decision was
+  // protecting - a coin re-scoring well - did no better (re-buys scoring 60+:
+  // n=14, P&L -0.074, 0% win). Re-buys after a WINNING close also went 0/3.
+  assert.strictEqual(second.ok, false);
+  assert.ok(
+    !/re-buy cooldown/.test(second.reason),
+    `the blanket cooldown must stay disabled - it should not be the blocker, got: ${second.reason}`,
+  );
+  assert.match(second.reason, /position\(s\) in this mint today/);
 });
 
 test('a mint closed at a LOSS cannot be re-bought within the loss-rebuy cooldown window (regression: real live data showed "Pumpooor" bought and re-bought 9 times in one hour after the blanket cooldown was removed, losing a little almost every round trip to fees/slippage)', async () => {
@@ -382,5 +427,15 @@ test('a mint closed at a PROFIT is never touched by the loss-rebuy cooldown, eve
   dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 2, liquidityUsd: 5000 }); // restore the file's default mock
 
   const second = await positions.attemptEntry(token, score);
-  assert.strictEqual(second.ok, true, `a mint that closed at a real profit should be immediately re-buyable, got: ${second.reason}`);
+  // The loss-rebuy cooldown still correctly ignores a PROFITABLE close - that
+  // guard's scope is unchanged and this pins it. The daily per-mint cap is what
+  // blocks the re-buy now, and it blocks regardless of how the previous
+  // position ended, because the data gave no reason to exempt winners:
+  // re-buys following a winning close went 0 for 3.
+  assert.strictEqual(second.ok, false);
+  assert.ok(
+    !/loss re-buy cooldown/.test(second.reason),
+    `the loss cooldown must not fire on a profitable close, got: ${second.reason}`,
+  );
+  assert.match(second.reason, /position\(s\) in this mint today/);
 });
