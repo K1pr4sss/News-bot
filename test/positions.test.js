@@ -35,9 +35,9 @@ test('take-profit tier 1 sells 50% of original at +30%', async () => {
   assert.strictEqual(row.status, 'open');
 });
 
-test('stop-loss at -20% closes the full remaining position', async () => {
+test('stop-loss closes the full remaining position', async () => {
   const pos = insertOpenPosition({ mint: 'SL' });
-  await positions.evaluateExit(pos, { priceUsd: 0.79 }, flatScore); // -21%, clear of the -20% boundary to avoid float-precision flakiness at the exact threshold
+  await positions.evaluateExit(pos, { priceUsd: 0.60 }, flatScore); // -40%, clear of the -35% boundary to avoid float-precision flakiness at the exact threshold
   const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('SL');
   assert.strictEqual(row.remaining_amount_sol, 0);
   assert.strictEqual(row.status, 'closed');
@@ -45,7 +45,7 @@ test('stop-loss at -20% closes the full remaining position', async () => {
 
 test('stop-loss still fires immediately inside the thesis-cut window (the cut delay must never delay real risk protection)', async () => {
   const pos = insertOpenPosition({ mint: 'SLGRACE', opened_at: Date.now() }); // brand new, well inside the 10min window
-  await positions.evaluateExit(pos, { priceUsd: 0.79 }, flatScore); // -21%
+  await positions.evaluateExit(pos, { priceUsd: 0.60 }, flatScore); // -40%
   const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('SLGRACE');
   assert.strictEqual(row.status, 'closed', 'stop-loss must not be delayed by the thesis-cut timer');
 });
@@ -104,7 +104,7 @@ test('the thesis cut never fires on a position that has banked a take-profit - t
 // therefore work with no score in hand.
 test('every exit rule works with price alone, no hype score supplied (the shape exitTick actually calls)', async () => {
   const sl = insertOpenPosition({ mint: 'NOSCORE_SL' });
-  await positions.evaluateExit(sl, { priceUsd: 0.79 }); // -21%, no third argument at all
+  await positions.evaluateExit(sl, { priceUsd: 0.60 }); // -40%, no third argument at all
   assert.strictEqual(db.prepare('SELECT * FROM positions WHERE mint = ?').get('NOSCORE_SL').status, 'closed');
 
   const tp = insertOpenPosition({ mint: 'NOSCORE_TP' });
