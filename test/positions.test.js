@@ -26,13 +26,22 @@ function insertOpenPosition(overrides = {}) {
 
 const flatScore = { score: 50, volumeRatio: 3 };
 
-test('take-profit tier 1 sells 50% of original at +30%', async () => {
+// The 30/60/100 ladder is gone. Race-testing real price paths with realistic
+// friction (stop overshoot, slippage, flat fee) gave +40/-35 a train EV of
+// +7.5% and test EV of +4.3%, while the old +30/-20 was negative in BOTH halves
+// (-2.9 / -2.6). +40% is the peak at every stop level and everything at +50%+
+// is negative in both halves, so "let winners run" is actively wrong here.
+test('take-profit closes the WHOLE position in one exit at +40%', async () => {
   const pos = insertOpenPosition({ mint: 'TP1' });
-  await positions.evaluateExit(pos, { priceUsd: 1.30 }, flatScore);
+  await positions.evaluateExit(pos, { priceUsd: 1.30 }, flatScore); // +30% - below the new tier
+  assert.strictEqual(db.prepare('SELECT * FROM positions WHERE mint = ?').get('TP1').status, 'open', '+30% must no longer trigger anything');
+
+  await positions.evaluateExit(pos, { priceUsd: 1.42 }, flatScore); // +42%
   const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('TP1');
-  assert.ok(Math.abs(row.remaining_amount_sol - 0.05) < 1e-9);
-  assert.strictEqual(row.tp1_fired, 1);
-  assert.strictEqual(row.status, 'open');
+  assert.strictEqual(row.remaining_amount_sol, 0, 'the whole position closes - no remainder to give back');
+  assert.strictEqual(row.status, 'closed');
+  const sells = db.prepare("SELECT * FROM trades WHERE mint = 'TP1' AND side = 'sell'").all();
+  assert.strictEqual(sells.length, 1, 'one exit, one fee leg');
 });
 
 test('stop-loss closes the full remaining position', async () => {
@@ -108,8 +117,8 @@ test('every exit rule works with price alone, no hype score supplied (the shape 
   assert.strictEqual(db.prepare('SELECT * FROM positions WHERE mint = ?').get('NOSCORE_SL').status, 'closed');
 
   const tp = insertOpenPosition({ mint: 'NOSCORE_TP' });
-  await positions.evaluateExit(tp, { priceUsd: 1.30 }); // +30%
-  assert.strictEqual(db.prepare('SELECT * FROM positions WHERE mint = ?').get('NOSCORE_TP').tp1_fired, 1);
+  await positions.evaluateExit(tp, { priceUsd: 1.42 }); // +42%, past the single +40% tier
+  assert.strictEqual(db.prepare('SELECT * FROM positions WHERE mint = ?').get('NOSCORE_TP').status, 'closed');
 
   const cut = insertOpenPosition({ mint: 'NOSCORE_CUT', opened_at: Date.now() - 11 * 60 * 1000 });
   await positions.evaluateExit(cut, { priceUsd: 0.95 }); // losing, past the cut delay
@@ -162,11 +171,10 @@ test('does not chase - skips the buy when the price ran away between evaluation 
 // stopped at -29%. Worth +0.0117 SOL and +3pp win rate across 108 replayed
 // positions.
 test('once a take-profit has fired, the remainder is protected at breakeven instead of riding to the full stop', async () => {
-  const pos = insertOpenPosition({ mint: 'BE1' });
-  await positions.evaluateExit(pos, { priceUsd: 1.30 }); // +30% -> tier 1 banks half
-  const afterTp = db.prepare('SELECT * FROM positions WHERE mint = ?').get('BE1');
-  assert.strictEqual(afterTp.tp1_fired, 1);
-  assert.strictEqual(afterTp.status, 'open');
+  // Take-profit tiers now close 100%, so production never leaves a remainder.
+  // The breakeven guard remains as protection for any partial-tier config, and
+  // is tested by seeding that state directly.
+  const afterTp = insertOpenPosition({ mint: 'BE1', tp1_fired: 1, remaining_amount_sol: 0.05 });
 
   // -5% would be nowhere near the -20% rule, but it IS below breakeven, so the
   // protected remainder must close rather than ride back down.
@@ -219,17 +227,16 @@ test('a mint cannot be bought twice in a day - re-buys of the same coin have a ~
   db.prepare('UPDATE paper_wallet SET balance_sol = ? WHERE id = 1').run(balanceBefore);
 });
 
-test('take-profit ladder walks tier1 -> tier2 -> tier3 to fully closed', async () => {
-  const pos1 = insertOpenPosition({ mint: 'LADDER' });
-  await positions.evaluateExit(pos1, { priceUsd: 1.30 }, flatScore); // tier1: -50%
-  const pos2 = db.prepare('SELECT * FROM positions WHERE mint = ?').get('LADDER');
-  await positions.evaluateExit(pos2, { priceUsd: 1.60 }, flatScore); // tier2: -30% of original
-  const pos3 = db.prepare('SELECT * FROM positions WHERE mint = ?').get('LADDER');
-  assert.ok(Math.abs(pos3.remaining_amount_sol - 0.02) < 1e-9); // 0.1 - 0.05 - 0.03
-  await positions.evaluateExit(pos3, { priceUsd: 2.00 }, flatScore); // tier3: remainder
-  const pos4 = db.prepare('SELECT * FROM positions WHERE mint = ?').get('LADDER');
-  assert.strictEqual(pos4.remaining_amount_sol, 0);
-  assert.strictEqual(pos4.status, 'closed');
+test('a price that jumps straight past several tiers still closes exactly once', async () => {
+  // All three tiers now sell 100%, so whichever is reached first closes the
+  // position. A gap from entry to +150% must not produce three sells.
+  const pos = insertOpenPosition({ mint: 'LADDER' });
+  await positions.evaluateExit(pos, { priceUsd: 2.50 }, flatScore); // +150%, past every tier
+  const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('LADDER');
+  assert.strictEqual(row.remaining_amount_sol, 0);
+  assert.strictEqual(row.status, 'closed');
+  const sells = db.prepare("SELECT * FROM trades WHERE mint = 'LADDER' AND side = 'sell'").all();
+  assert.strictEqual(sells.length, 1, `a gap past all tiers must still be ONE sell, got ${sells.length}`);
 });
 
 test('entry sizing matches the score-band table against live paper balance', async () => {
@@ -279,15 +286,19 @@ test('two overlapping exit-ticks reading the same stale position only sell once 
   const snapshotB = { ...pos };
 
   await Promise.all([
-    // +30% - both snapshots see tp1_fired=0 and both reach sellFraction, so the
-    // compare-and-swap in sellFraction is the only thing preventing a double sell.
-    positions.evaluateExit(snapshotA, { priceUsd: 1.30 }, flatScore),
-    positions.evaluateExit(snapshotB, { priceUsd: 1.30 }, flatScore),
+    // -40%: both snapshots read the same remaining_amount_sol and both reach
+    // sellFraction, so the compare-and-swap there is the only thing preventing
+    // a double sell. Driven through the stop-loss rather than a partial tier
+    // because take-profit tiers now close 100% and leave no partial to race on.
+    positions.evaluateExit(snapshotA, { priceUsd: 0.60 }, flatScore),
+    positions.evaluateExit(snapshotB, { priceUsd: 0.60 }, flatScore),
   ]);
 
   const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('RACE');
-  // 50% of 0.05 = 0.025 sold ONCE, not twice - remaining should be 0.025, not 0.
-  assert.ok(Math.abs(row.remaining_amount_sol - 0.025) < 1e-9, `expected 0.025 remaining after exactly one 50% sell, got ${row.remaining_amount_sol}`);
+  assert.strictEqual(row.remaining_amount_sol, 0);
+  assert.strictEqual(row.status, 'closed');
+  // The real assertion: the second overlapping tick must be rejected by the CAS
+  // rather than recording a second sell of an already-sold position.
   const sells = db.prepare("SELECT * FROM trades WHERE mint = 'RACE' AND side = 'sell'").all();
   assert.strictEqual(sells.length, 1, `expected exactly 1 recorded sell, got ${sells.length}`);
 });
