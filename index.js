@@ -48,8 +48,25 @@ app.get('/trades', (req, res) => {
   res.json(rows);
 });
 
+// ?status=closed|all (default: open) and ?limit=N.
+//
+// Every position records entry_metrics - a JSON blob of liquidityUsd,
+// volumeH1Usd, buyersH1/sellersH1, buySellRatio, volumePerTraderUsd and the
+// m5/h1/h6/h24 price changes, captured at the moment of the buy. That is the
+// single richest feature set the bot owns for the question that matters (what
+// distinguishes a trade that works from one that dies) and it was unreachable,
+// because only OPEN positions were ever served and the interesting ones are
+// all closed. Reconstructing those features afterwards means replaying
+// third-party candles against a rate limit, which is both slower and less
+// accurate than the reading the bot took at the time.
 app.get('/positions', (req, res) => {
-  res.json(positions.getOpenPositions());
+  const status = req.query.status;
+  if (!status || status === 'open') return res.json(positions.getOpenPositions());
+  const limit = Math.min(Number(req.query.limit) || 500, 2000);
+  const rows = status === 'all'
+    ? db.prepare('SELECT * FROM positions ORDER BY id DESC LIMIT ?').all(limit)
+    : db.prepare('SELECT * FROM positions WHERE status = ? ORDER BY id DESC LIMIT ?').all(status, limit);
+  res.json(rows);
 });
 
 // "Why no alerts/buys" is unanswerable from /health+/stats alone - both only
