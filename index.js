@@ -87,9 +87,18 @@ app.get('/diagnostics', (req, res) => {
 // the only ones a threshold change would actually convert into trades.
 app.get('/rejections', (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 200, 2000);
+  // ?before=<id> pages backwards. Without it this endpoint could only ever
+  // show the newest 2,000 rows, and rejections are written fast enough that
+  // 2,000 rows is under two hours - so the 72 hours the table actually retains
+  // were unreachable. The counterfactual that matters most (how do the coins
+  // the momentum gate turned away actually perform?) needs candidates old
+  // enough to have forward prices, which is exactly what the newest rows are
+  // not. ?sole filters to single-reason rejections, which are the only ones
+  // that isolate one gate's effect.
+  const before = Number(req.query.before) || Number.MAX_SAFE_INTEGER;
   const rows = req.query.sole
-    ? db.prepare('SELECT * FROM rejections WHERE sole_reason IS NOT NULL ORDER BY id DESC LIMIT ?').all(limit)
-    : db.prepare('SELECT * FROM rejections ORDER BY id DESC LIMIT ?').all(limit);
+    ? db.prepare('SELECT * FROM rejections WHERE sole_reason IS NOT NULL AND id < ? ORDER BY id DESC LIMIT ?').all(before, limit)
+    : db.prepare('SELECT * FROM rejections WHERE id < ? ORDER BY id DESC LIMIT ?').all(before, limit);
   res.json(rows);
 });
 

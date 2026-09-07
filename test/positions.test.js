@@ -7,6 +7,7 @@ const db = require('../lib/db');
 const executor = require('../lib/executor');
 const dexscreener = require('../lib/dexscreener');
 const positions = require('../lib/positions');
+const config = require('../lib/config');
 
 dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 2, liquidityUsd: 5000 });
 
@@ -246,11 +247,27 @@ test('entry sizing matches the score-band table against live paper balance', asy
   const balanceBefore = executor.getBalanceSol();
   const entry = await positions.attemptEntry(
     { mint: 'ENTRY1', name: 'Entry', symbol: 'ENT', priceUsd: 2, liquidityUsd: 10000 },
-    { score: 60 }, // 55-70 band -> 10%
+    { score: 60 }, // 55-70 band
   );
   assert.strictEqual(entry.ok, true);
   assert.strictEqual(entry.tier.label, '55-70');
-  assert.ok(Math.abs(entry.amountSol - balanceBefore * 0.10) < 1e-9);
+  // Asserted against config rather than a literal: what this test protects is
+  // that the score lands in the right BAND and that the band's fraction is the
+  // one applied, not any particular tuning of that fraction.
+  assert.ok(Math.abs(entry.amountSol - balanceBefore * config.sizeTier2Pct) < 1e-9);
+});
+
+test('size tiers are flat - the score does not earn a bigger bet (higher-score trades died more often and lost more, in both halves of the sample)', () => {
+  assert.strictEqual(config.sizeTier2Pct, config.sizeTier1Pct);
+  assert.strictEqual(config.sizeTier3Pct, config.sizeTier1Pct);
+});
+
+test('position size stays inside the range that survives the realised return distribution (12% bootstrapped to a 100% chance of losing 90%+ of the account over 400 trades; the measured per-trade mean is -10.5% with a 95% CI excluding zero)', () => {
+  assert.ok(config.sizeTier1Pct <= 0.06, 'sizing above ~6% is ruinous against the observed fat left tail');
+  // ...and the floor must not be set so high that it silently halts trading:
+  // at this fraction it has to clear on a balance the bot actually has.
+  assert.ok(config.minPositionSol < config.sizeTier1Pct * 0.5,
+    'minPositionSol must be reachable at the current size fraction, or the bot freezes itself');
 });
 
 test('attemptEntry buys at a FRESH price, not the stale one carried on the token object (regression: real P&L verification against a live trade - "pippo" - found the recorded entry price matched no point in the coin\'s real price history, off by ~3.8x. Root cause: discoveryTick evaluates a whole getNewPools() batch sequentially, so a candidate late in a large batch can be bought minutes after its price snapshot was taken. attemptEntry used to trust that stale token.priceUsd directly instead of re-fetching)', async () => {
