@@ -53,3 +53,64 @@ test('FAILS OPEN when 1h price change is unavailable, rather than blocking every
     assert.strictEqual(pass, true, `momentum gate must not block when h1 is ${String(missing)}`);
   }
 });
+
+// --- Minimum pool age -------------------------------------------------------
+// Older pools did materially better across the bot's own entry readings, and
+// the fresh ones carry the catastrophic tail: of the 14 trades a 30-minute
+// floor would have skipped, 12 lost, including NVDA at -101.4% on an 18-minute
+// pool that gapped from +7.6% to -99.7% in two candles.
+
+test('rejects a pool younger than the minimum age floor', () => {
+  const { pass, reasons } = runSafetyFilters(
+    { ...cleanToken, poolCreatedAt: Date.now() - 10 * 60000 }, cleanRugcheck, null,
+  );
+  assert.strictEqual(pass, false);
+  assert.ok(reasons.some((r) => r.includes('too fresh')));
+});
+
+test('accepts a pool that has aged past the floor', () => {
+  const { pass } = runSafetyFilters(
+    { ...cleanToken, poolCreatedAt: Date.now() - 120 * 60000 }, cleanRugcheck, null,
+  );
+  assert.strictEqual(pass, true);
+});
+
+test('minimum pool age fails OPEN when the pool creation time is unreadable (an unknown field must never silently reject, same rule as the momentum gate)', () => {
+  assert.strictEqual(runSafetyFilters(cleanToken, cleanRugcheck, null).pass, true);
+  assert.strictEqual(
+    runSafetyFilters({ ...cleanToken, poolCreatedAt: null }, cleanRugcheck, null).pass, true,
+  );
+});
+
+// --- Volume / liquidity churn ceiling ---------------------------------------
+
+test('rejects a pool churning its whole liquidity many times an hour', () => {
+  const { pass, reasons } = runSafetyFilters(
+    {
+      ...cleanToken, poolCreatedAt: Date.now() - 120 * 60000,
+      liquidityUsd: 50000, volumeH1Usd: 50000 * 20,
+    }, cleanRugcheck, null,
+  );
+  assert.strictEqual(pass, false);
+  assert.ok(reasons.some((r) => r.includes('volume/liquidity')));
+});
+
+test('accepts normal turnover', () => {
+  const { pass } = runSafetyFilters(
+    {
+      ...cleanToken, poolCreatedAt: Date.now() - 120 * 60000,
+      liquidityUsd: 50000, volumeH1Usd: 50000 * 2,
+    }, cleanRugcheck, null,
+  );
+  assert.strictEqual(pass, true);
+});
+
+test('churn ceiling is skipped, not enforced, when volume is unreadable', () => {
+  const base = { ...cleanToken, poolCreatedAt: Date.now() - 120 * 60000 };
+  assert.strictEqual(runSafetyFilters({ ...base, volumeH1Usd: undefined }, cleanRugcheck, null).pass, true);
+  // Zero liquidity is rejected, but by the liquidity floor - the churn ratio is
+  // undefined there and must not be the thing that reports it.
+  const { reasons } = runSafetyFilters({ ...base, liquidityUsd: 0, volumeH1Usd: 1000 }, cleanRugcheck, null);
+  assert.ok(reasons.some((r) => r.includes('liquidity $0')));
+  assert.ok(!reasons.some((r) => r.includes('volume/liquidity')));
+});
