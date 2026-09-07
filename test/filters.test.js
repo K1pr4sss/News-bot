@@ -26,15 +26,22 @@ test('passes when Birdeye holder count clears the floor', () => {
 // already moving made +0.078 SOL while entries into flat coins lost -0.195
 // SOL, and flat entries hit +30% only 9% of the time vs 67% for ones already
 // running. See config.js's minPriceMomentumH1Pct.
-test('rejects a token whose 1h price change is below the momentum floor', () => {
-  const { pass, reasons } = runSafetyFilters({ ...cleanToken, priceChangeH1Pct: 3 }, cleanRugcheck, null);
-  assert.strictEqual(pass, false);
-  assert.ok(reasons.some((r) => r.includes('price momentum')), `expected a momentum rejection, got: ${reasons.join(' | ')}`);
+// These two assertions used to run the other way round - 3% was rejected as
+// "not moving yet" and 140% was accepted as "already running". The
+// counterfactual inverted both: the >=50% population the gate was built to
+// select loses in both halves of the sample (-4.7% / -7.1%, 39% of them falling
+// below -80% within two hours), while the mild band it was rejecting wins in
+// both (+4.8% / +5.9%, 19% dying). Kept pointing the new way rather than
+// deleted, because the direction of this gate IS the finding.
+test('passes a token drifting gently upward - what the old floor threw away', () => {
+  const { pass } = runSafetyFilters({ ...cleanToken, priceChangeH1Pct: 3 }, cleanRugcheck, null);
+  assert.strictEqual(pass, true);
 });
 
-test('passes a token that is already running', () => {
-  const { pass } = runSafetyFilters({ ...cleanToken, priceChangeH1Pct: 140 }, cleanRugcheck, null);
-  assert.strictEqual(pass, true);
+test('rejects a token that has already run 140% in the hour - what the old floor demanded', () => {
+  const { pass, reasons } = runSafetyFilters({ ...cleanToken, priceChangeH1Pct: 140 }, cleanRugcheck, null);
+  assert.strictEqual(pass, false);
+  assert.ok(reasons.some((r) => r.includes('price momentum')), `expected a momentum rejection, got: ${reasons.join(' | ')}`);
 });
 
 test('rejects on a NEGATIVE 1h change (a fading coin must not slip through as "no data")', () => {
@@ -113,4 +120,38 @@ test('churn ceiling is skipped, not enforced, when volume is unreadable', () => 
   const { reasons } = runSafetyFilters({ ...base, liquidityUsd: 0, volumeH1Usd: 1000 }, cleanRugcheck, null);
   assert.ok(reasons.some((r) => r.includes('liquidity $0')));
   assert.ok(!reasons.some((r) => r.includes('volume/liquidity')));
+});
+
+// --- Momentum band ----------------------------------------------------------
+// The counterfactual: coins rejected ONLY for momentum under 50% raced forward
+// on the same rule returned +5.4% in the 0-15% band (train +4.8 / test +5.9,
+// 19% died) against -5.9% for the >=50% coins the bot was actually buying
+// (train -4.7 / test -7.1, 39% died). The gate was inverted.
+
+const aged = { ...cleanToken, poolCreatedAt: Date.now() - 120 * 60000 };
+
+test('rejects a coin that has already run too far in the hour (blow-off)', () => {
+  const { pass, reasons } = runSafetyFilters({ ...aged, priceChangeH1Pct: 80 }, cleanRugcheck, null);
+  assert.strictEqual(pass, false);
+  assert.ok(reasons.some((r) => r.includes('ceiling')));
+});
+
+test('rejects a coin that is not moving at all', () => {
+  const { pass, reasons } = runSafetyFilters({ ...aged, priceChangeH1Pct: -3 }, cleanRugcheck, null);
+  assert.strictEqual(pass, false);
+  assert.ok(reasons.some((r) => r.includes('floor')));
+});
+
+test('accepts mild upward momentum - the only band that was positive in both halves', () => {
+  assert.strictEqual(runSafetyFilters({ ...aged, priceChangeH1Pct: 8 }, cleanRugcheck, null).pass, true);
+});
+
+test('the momentum band still fails OPEN when h1 is unreadable (a pool minutes old has no 1h history, and rejecting on absent data starves the pipeline)', () => {
+  assert.strictEqual(runSafetyFilters(aged, cleanRugcheck, null).pass, true);
+  assert.strictEqual(runSafetyFilters({ ...aged, priceChangeH1Pct: null }, cleanRugcheck, null).pass, true);
+});
+
+test('the 50%+ momentum the bot used to REQUIRE is now the thing it refuses', () => {
+  const { pass } = runSafetyFilters({ ...aged, priceChangeH1Pct: 50 }, cleanRugcheck, null);
+  assert.strictEqual(pass, false);
 });
