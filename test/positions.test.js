@@ -75,19 +75,35 @@ test('thesis cut does NOT fire on a position that is UP, no matter how far the h
   assert.ok(Math.abs(row.remaining_amount_sol - 0.1) < 1e-9, 'nothing should have been sold');
 });
 
-test('thesis cut is held off until the cut delay, then closes the position in ONE sell', async () => {
-  const fresh = insertOpenPosition({ mint: 'CUT1', opened_at: Date.now() }); // 0min old
-  await positions.evaluateExit(fresh, { priceUsd: 0.95 }, flatScore); // -5%, losing but too young
-  const stillOpen = db.prepare('SELECT * FROM positions WHERE mint = ?').get('CUT1');
-  assert.strictEqual(stillOpen.status, 'open', 'should not cut before thesisCutAfterMinutes');
+test('the thesis cut is DISABLED by default - it was tuned against blow-off entries and costs 1.7pp against the mild-momentum band the bot now buys (live: 11 of the first 13 exits were thesis cuts, most on flat positions, each paying a full round trip to close a trade that had not done anything)', async () => {
+  assert.strictEqual(config.thesisCutAfterMinutes, 0);
+  const aged = insertOpenPosition({ mint: 'CUT0', opened_at: Date.now() - 60 * 60 * 1000 });
+  await positions.evaluateExit(aged, { priceUsd: 0.95 }, flatScore); // -5% and an hour old
+  assert.strictEqual(
+    db.prepare('SELECT * FROM positions WHERE mint = ?').get('CUT0').status, 'open',
+    'a losing position must now be judged by the stop and max-hold, not closed for being flat',
+  );
+});
 
-  const aged = { ...stillOpen, opened_at: Date.now() - 11 * 60 * 1000 }; // 11min old, past the 10min default
-  await positions.evaluateExit(aged, { priceUsd: 0.95 }, flatScore);
-  const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('CUT1');
-  assert.strictEqual(row.status, 'closed');
-  assert.strictEqual(row.remaining_amount_sol, 0);
-  const sells = db.prepare("SELECT * FROM trades WHERE mint = ? AND side = 'sell'").all('CUT1');
-  assert.strictEqual(sells.length, 1, 'must close in a single sell - the old 70%-then-30% two-step burned an extra fee leg on every loser');
+test('when explicitly re-enabled, the thesis cut still holds off until the delay and closes in ONE sell', async () => {
+  const original = config.thesisCutAfterMinutes;
+  config.thesisCutAfterMinutes = 10;
+  try {
+    const fresh = insertOpenPosition({ mint: 'CUT1', opened_at: Date.now() }); // 0min old
+    await positions.evaluateExit(fresh, { priceUsd: 0.95 }, flatScore); // -5%, losing but too young
+    const stillOpen = db.prepare('SELECT * FROM positions WHERE mint = ?').get('CUT1');
+    assert.strictEqual(stillOpen.status, 'open', 'should not cut before thesisCutAfterMinutes');
+
+    const aged = { ...stillOpen, opened_at: Date.now() - 11 * 60 * 1000 }; // past the delay
+    await positions.evaluateExit(aged, { priceUsd: 0.95 }, flatScore);
+    const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('CUT1');
+    assert.strictEqual(row.status, 'closed');
+    assert.strictEqual(row.remaining_amount_sol, 0);
+    const sells = db.prepare("SELECT * FROM trades WHERE mint = ? AND side = 'sell'").all('CUT1');
+    assert.strictEqual(sells.length, 1, 'must close in a single sell - the old 70%-then-30% two-step burned an extra fee leg on every loser');
+  } finally {
+    config.thesisCutAfterMinutes = original;
+  }
 });
 
 test('the thesis cut never fires on a position that has banked a take-profit - the breakeven stop governs it instead', async () => {
@@ -121,8 +137,14 @@ test('every exit rule works with price alone, no hype score supplied (the shape 
   await positions.evaluateExit(tp, { priceUsd: 1.42 }); // +42%, past the single +40% tier
   assert.strictEqual(db.prepare('SELECT * FROM positions WHERE mint = ?').get('NOSCORE_TP').status, 'closed');
 
+  const original = config.thesisCutAfterMinutes;
+  config.thesisCutAfterMinutes = 10; // disabled by default; exercised here for the no-score path
   const cut = insertOpenPosition({ mint: 'NOSCORE_CUT', opened_at: Date.now() - 11 * 60 * 1000 });
-  await positions.evaluateExit(cut, { priceUsd: 0.95 }); // losing, past the cut delay
+  try {
+    await positions.evaluateExit(cut, { priceUsd: 0.95 }); // losing, past the cut delay
+  } finally {
+    config.thesisCutAfterMinutes = original;
+  }
   assert.strictEqual(db.prepare('SELECT * FROM positions WHERE mint = ?').get('NOSCORE_CUT').status, 'closed');
 
   // and the recorded score is a clean null rather than the string "undefined"
