@@ -368,8 +368,10 @@ test('realized P&L accounts for the BUY-side fee too (regression: reported P&L a
   const reported = sells[0].realized_pnl_sol;
   // proceeds credited to the wallet = cost + reportedPnl + buyFeeShare, i.e.
   // the reported figure must be one full buy fee BELOW the raw wallet movement.
+  // Asserted against config rather than a literal: what this protects is that
+  // the buy leg's fee is attributed at all, not any particular fee value.
   assert.ok(
-    Math.abs((balanceDelta - 0.1) - (reported + 0.001)) < 1e-9,
+    Math.abs((balanceDelta - 0.1) - (reported + config.paperFeeSol)) < 1e-9,
     `reported P&L (${reported}) should be exactly one buy fee below the wallet's own accounting (${balanceDelta - 0.1})`,
   );
   assert.ok(reported < 0, 'a flat round trip must show a LOSS once both fee legs and slippage are counted');
