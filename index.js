@@ -2,6 +2,7 @@ const express = require('express');
 const config = require('./lib/config');
 const logger = require('./lib/logger');
 const db = require('./lib/db');
+const jupiter = require('./lib/jupiter');
 const executor = require('./lib/executor');
 const geckoterminal = require('./lib/geckoterminal');
 const coingecko = require('./lib/coingecko');
@@ -152,6 +153,13 @@ app.get('/sources', (req, res) => {
       effectiveMax: (config.redditClientId && config.redditClientSecret) ? 100 : 90,
     },
     entryGate: { minMentionCount: config.minMentionCount, scoreAlertThreshold: config.scoreAlertThreshold },
+    // The execution-cost gate is the one input here that is measured rather
+    // than inferred, so its health matters differently from the others: when
+    // Jupiter is unreachable this gate does not fail loudly, it stops refusing
+    // anything, and the bot silently goes back to trading blind on cost. `ok`
+    // counts successful quotes, so a rising `failed` with a flat `ok` is the
+    // shape to watch for.
+    executionCost: jupiter.getStatus(),
   });
 });
 

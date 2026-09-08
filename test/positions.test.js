@@ -8,6 +8,13 @@ const executor = require('../lib/executor');
 const dexscreener = require('../lib/dexscreener');
 const positions = require('../lib/positions');
 const config = require('../lib/config');
+const jupiter = require('../lib/jupiter');
+
+// attemptEntry now quotes Jupiter for the real round-trip cost. Stub it so unit
+// tests never touch the network, and so each test can state the cost it means
+// to exercise. Default: unknown, which is the fail-open path.
+let stubbedCostPct = null;
+jupiter.getRoundTripCostPct = async () => stubbedCostPct;
 
 dexscreener.getTokenPriceUsd = async () => ({ priceUsd: 2, liquidityUsd: 5000 });
 
@@ -488,4 +495,77 @@ test('a mint closed at a PROFIT is never touched by the loss-rebuy cooldown, eve
     `the loss cooldown must not fire on a profitable close, got: ${second.reason}`,
   );
   assert.match(second.reason, /position\(s\) in this mint today/);
+});
+
+
+// --- measured execution cost -------------------------------------------------
+
+test('refuses an entry whose measured round-trip cost exceeds the ceiling - a trade costing 7.8% cannot win on a strategy earning ~2.8% gross, whatever the price then does', async () => {
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
+  stubbedCostPct = 7.8;
+  try {
+    const r = await positions.attemptEntry(
+      { mint: 'COSTLY', name: 'Costly', symbol: 'CST', priceUsd: 2, liquidityUsd: 50000 },
+      { score: 45 },
+    );
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.reason.includes('round-trip cost'));
+  } finally { stubbedCostPct = null; }
+});
+
+test('an UNKNOWN cost never blocks an entry - a Jupiter outage must degrade the bot to its old blind behaviour, not halt it', async () => {
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
+  stubbedCostPct = null;
+  const r = await positions.attemptEntry(
+    { mint: 'UNKNOWNCOST', name: 'Unknown', symbol: 'UNK', priceUsd: 2, liquidityUsd: 50000 },
+    { score: 45 },
+  );
+  assert.strictEqual(r.ok, true);
+});
+
+test('the measured cost is applied to the FILL, not just recorded - an expensive coin must be priced as expensive on both legs', async () => {
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
+  stubbedCostPct = 2.0; // 1% per leg
+  let cheapEntry;
+  try {
+    cheapEntry = await positions.attemptEntry(
+      { mint: 'CHEAPFILL', name: 'Cheap', symbol: 'CHP', priceUsd: 2, liquidityUsd: 50000 },
+      { score: 45 },
+    );
+  } finally { stubbedCostPct = null; }
+  assert.strictEqual(cheapEntry.ok, true);
+
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
+  stubbedCostPct = 2.9; // 1.45% per leg - still under the ceiling
+  let pricyEntry;
+  try {
+    pricyEntry = await positions.attemptEntry(
+      { mint: 'PRICYFILL', name: 'Pricy', symbol: 'PRC', priceUsd: 2, liquidityUsd: 50000 },
+      { score: 45 },
+    );
+  } finally { stubbedCostPct = null; }
+  assert.strictEqual(pricyEntry.ok, true);
+
+  const cheap = db.prepare('SELECT * FROM positions WHERE mint = ?').get('CHEAPFILL');
+  const pricy = db.prepare('SELECT * FROM positions WHERE mint = ?').get('PRICYFILL');
+  assert.ok(
+    pricy.entry_price_usd > cheap.entry_price_usd,
+    'the costlier token must fill at a worse price - otherwise the paper P&L flatters exactly the trades that lose most',
+  );
+  assert.strictEqual(cheap.entry_round_trip_cost_pct, 2.0);
+  assert.strictEqual(pricy.entry_round_trip_cost_pct, 2.9);
+});
+
+test('a position with no measured cost falls back to the flat assumption rather than filling for free', async () => {
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
+  stubbedCostPct = null;
+  const r = await positions.attemptEntry(
+    { mint: 'FALLBACK', name: 'Fallback', symbol: 'FBK', priceUsd: 2, liquidityUsd: 50000 },
+    { score: 45 },
+  );
+  assert.strictEqual(r.ok, true);
+  const row = db.prepare('SELECT * FROM positions WHERE mint = ?').get('FALLBACK');
+  assert.strictEqual(row.entry_round_trip_cost_pct, null);
+  const expected = 2 * (1 + config.paperSlippagePct / 100);
+  assert.ok(Math.abs(row.entry_price_usd - expected) < 1e-9);
 });
