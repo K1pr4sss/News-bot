@@ -569,3 +569,43 @@ test('a position with no measured cost falls back to the flat assumption rather 
   const expected = 2 * (1 + config.paperSlippagePct / 100);
   assert.ok(Math.abs(row.entry_price_usd - expected) < 1e-9);
 });
+
+test('the cost quote runs BEFORE the execution price is fetched - two Jupiter legs at an 8s timeout can put 16 seconds between fetching a price and filling on it, which is the exact staleness the drift guard exists to catch', async () => {
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
+  const order = [];
+  const realQuote = jupiter.getRoundTripCostPct;
+  const realPrice = dexscreener.getTokenPriceUsd;
+  jupiter.getRoundTripCostPct = async () => { order.push('quote'); return 1.0; };
+  dexscreener.getTokenPriceUsd = async () => { order.push('price'); return { priceUsd: 2, liquidityUsd: 5000 }; };
+  try {
+    const r = await positions.attemptEntry(
+      { mint: 'ORDERCHK', name: 'Order', symbol: 'ORD', priceUsd: 2, liquidityUsd: 50000 },
+      { score: 45 },
+    );
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(order, ['quote', 'price'], 'the freshest price must be the one adjacent to the fill');
+  } finally {
+    jupiter.getRoundTripCostPct = realQuote;
+    dexscreener.getTokenPriceUsd = realPrice;
+  }
+});
+
+test('a refused cost check costs no DexScreener call at all', async () => {
+  db.prepare("UPDATE positions SET status = 'closed' WHERE status = 'open'").run();
+  let priceCalls = 0;
+  const realQuote = jupiter.getRoundTripCostPct;
+  const realPrice = dexscreener.getTokenPriceUsd;
+  jupiter.getRoundTripCostPct = async () => 9.9;
+  dexscreener.getTokenPriceUsd = async () => { priceCalls += 1; return { priceUsd: 2, liquidityUsd: 5000 }; };
+  try {
+    const r = await positions.attemptEntry(
+      { mint: 'NOPRICECALL', name: 'X', symbol: 'X', priceUsd: 2, liquidityUsd: 50000 },
+      { score: 45 },
+    );
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(priceCalls, 0);
+  } finally {
+    jupiter.getRoundTripCostPct = realQuote;
+    dexscreener.getTokenPriceUsd = realPrice;
+  }
+});
