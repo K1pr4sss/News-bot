@@ -142,3 +142,17 @@ test('pending retry is batched per tick and rotates by least-recently-checked, s
     `second tick must rotate to unchecked candidates, but repeated: ${seen.filter((m) => firstFive.includes(m)).join(',')}`,
   );
 });
+
+test('a pool rejected for being too young is NOT queued - it cannot age in before eviction, and trending re-finds established tokens anyway (queue evicted 10,732 candidates in 17h; 17 of 19 band-era entries came from trending, none under 45 min old)', () => {
+  const { isPermanentReason } = require('../lib/evaluator');
+  assert.strictEqual(
+    isPermanentReason('pool only 5min old, under the 45min floor (too fresh to have survived anything)'),
+    true,
+  );
+});
+
+test('momentum failures ARE still queued - that is what the queue exists for, and it genuinely flips minute to minute', () => {
+  const { isPermanentReason } = require('../lib/evaluator');
+  assert.strictEqual(isPermanentReason('price momentum 28.9% over 1h below 50% floor (not moving yet)'), false);
+  assert.strictEqual(isPermanentReason('liquidity $2000 below $5000 floor'), false);
+});
