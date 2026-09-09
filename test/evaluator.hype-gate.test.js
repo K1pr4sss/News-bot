@@ -16,6 +16,14 @@ const positions = require('../lib/positions');
 const evaluator = require('../lib/evaluator');
 const db = require('../lib/db');
 const telegramBot = require('../lib/telegramBot');
+const config = require('../lib/config');
+
+// These tests are about the real-mention gate and alert CONTENT, not about
+// where the score bar happens to sit. Pin it low so they keep testing what they
+// were written to test when scoreAlertThreshold is tuned (it moved 40 -> 60 on
+// 2026-09-09 when score >=60 turned out to be the only signal positive in both
+// halves of the real ledger).
+config.scoreAlertThreshold = 40;
 
 // Stub every external source evaluateCandidate touches - this test is about
 // the real-mention gate specifically, not any one source's actual behavior.
