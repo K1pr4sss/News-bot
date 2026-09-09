@@ -111,3 +111,22 @@ test('a real alert quotes an actual post verbatim (not an AI paraphrase), priori
   assert.ok(sentText.includes('via Telegram alpha groups'), `expected the sample's source attributed, got: ${sentText}`);
   assert.ok(!sentText.includes('Boring News Co'), 'expected only ONE sample quoted (the higher-priority one), not both');
 });
+
+test('an entry the strategy WANTED but did not get is recorded, not just logged (with the score bar at 60 qualifying candidates arrive a couple of times a day - SPCX scored 63, alerted twice, reached a Jupiter cost quote and never became a trade, with nothing to read afterwards)', async () => {
+  const stats = require('../lib/stats');
+  const positions = require('../lib/positions');
+  const before = stats.recentEntryFailures.length;
+  const realEntry = positions.attemptEntry;
+  positions.attemptEntry = async () => ({ ok: false, reason: 'price ran 9.9% above the evaluated price before execution (max 3%) - not chasing' });
+  googleAlerts.getSignal = () => ({ mentionCount: 1 });
+  try {
+    await evaluator.evaluateCandidate(hypedLiquidToken('ENTRYFAIL'));
+  } finally {
+    positions.attemptEntry = realEntry;
+  }
+  assert.strictEqual(stats.recentEntryFailures.length, before + 1, 'the refusal must be recorded');
+  const last = stats.recentEntryFailures[stats.recentEntryFailures.length - 1];
+  assert.strictEqual(last.mint, 'ENTRYFAIL');
+  assert.ok(last.reason.includes('not chasing'));
+  assert.ok(Object.keys(stats.entryFailures).length > 0, 'and bucketed for a count');
+});

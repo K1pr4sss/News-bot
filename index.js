@@ -89,6 +89,11 @@ app.get('/diagnostics', (req, res) => {
     soleRejectionReasons: stats.soleRejectionReasons,
     nearMisses: stats.nearMisses,
     pendingCandidates: evaluator.getPendingCount(),
+    // Candidates the strategy WANTED and did not get - cleared every filter,
+    // scored high enough to alert, then refused at the entry stage. Distinct
+    // from rejectionReasons, which is candidates the strategy decided against.
+    entryFailures: stats.entryFailures,
+    recentEntryFailures: stats.recentEntryFailures,
     autoBuyPaused: positions.isPaused(),
     minMentionCount: config.minMentionCount,
     scoreAlertThreshold: config.scoreAlertThreshold,
