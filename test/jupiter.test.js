@@ -135,3 +135,30 @@ test('getStatus reports health without throwing', () => {
   assert.strictEqual(typeof s.totalQuotes, 'number');
   assert.strictEqual(s.ceilingPct, config.maxRoundTripCostPct);
 });
+
+// --- Jupiter Token API v2 (recorded, never gated) ---------------------------
+
+test('token intel is recorded but gates nothing - tested against all 95 traded mints, no field predicted the outcome (organicScore flips, its 70+ bucket is the WORST at -10.3% and 0 wins; devMints, holderCount and topHoldersPct all flip or are negative in both halves)', () => {
+  const jt = require('../lib/jupiterTokens');
+  const s = jt.getStatus();
+  assert.strictEqual(s.gated, false, 'if this ever becomes true it must be a decision made against forward data');
+  assert.deepStrictEqual(Object.keys(jt.EMPTY).sort(), [
+    'buyOrganicVolume24h', 'buyVolume24h', 'devBalancePct', 'devMigrations', 'devMints',
+    'freezeAuthorityDisabled', 'graduated', 'holderCount', 'launchpad', 'mintAuthorityDisabled',
+    'organicScore', 'organicScoreLabel', 'organicVolumeShare', 'poolCreatedAt', 'topHoldersPct',
+  ]);
+});
+
+test('a failed token lookup records nulls rather than throwing - enrichment must never be able to block a trade', async () => {
+  const axios2 = require('axios');
+  const jt = require('../lib/jupiterTokens');
+  const realGet = axios2.get;
+  axios2.get = async () => { throw new Error('ECONNRESET'); };
+  try {
+    const r = await jt.getTokenData('SOMEMINT_THAT_FAILS');
+    assert.strictEqual(r.organicScore, null);
+    assert.strictEqual(r.holderCount, null);
+  } finally {
+    axios2.get = realGet;
+  }
+});

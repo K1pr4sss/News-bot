@@ -3,6 +3,7 @@ const config = require('./lib/config');
 const logger = require('./lib/logger');
 const db = require('./lib/db');
 const jupiter = require('./lib/jupiter');
+const jupiterTokens = require('./lib/jupiterTokens');
 const executor = require('./lib/executor');
 const geckoterminal = require('./lib/geckoterminal');
 const coingecko = require('./lib/coingecko');
@@ -165,6 +166,10 @@ app.get('/sources', (req, res) => {
     // counts successful quotes, so a rising `failed` with a flat `ok` is the
     // shape to watch for.
     executionCost: jupiter.getStatus(),
+    // Recorded-only enrichment - see lib/jupiterTokens.js. gated:false is the
+    // point: if this ever starts gating, that was a deliberate decision made
+    // against forward data, not a drift.
+    tokenIntel: jupiterTokens.getStatus(),
   });
 });
 
