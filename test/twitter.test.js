@@ -55,3 +55,29 @@ test('GetXAPI: budget-capped (real per-call money, not a free quota), fails clos
   assert.strictEqual(windowResult.mentionCount, 1, `expected only the fresh tweet to count, got ${windowResult.mentionCount}`);
   assert.strictEqual(windowResult.sampleText, 'wagmi this coin is the next big thing');
 });
+
+test('a 402 latches the source OFF instead of retrying forever - a prepaid balance running out is not transient, and it was sitting in the hot path of every promising candidate making calls that could only fail (54 calls, 0 mentions, every one a 402)', async () => {
+  process.env.GETXAPI_API_KEY = 'k';
+  delete require.cache[require.resolve('../lib/config')];
+  delete require.cache[require.resolve('../lib/twitter')];
+  const axios2 = require('axios');
+  const realGet = axios2.get;
+  let calls = 0;
+  axios2.get = async () => {
+    calls += 1;
+    const e = new Error('Request failed with status code 402');
+    e.response = { status: 402 };
+    throw e;
+  };
+  const fresh = require('../lib/twitter');
+  try {
+    await fresh.searchMentionCount('somecoin');
+    assert.strictEqual(calls, 1);
+    assert.strictEqual(fresh.getStatus().outOfCredit, true, 'the 402 must latch');
+    await fresh.searchMentionCount('anothercoin');
+    await fresh.searchMentionCount('athirdcoin');
+    assert.strictEqual(calls, 1, 'no further calls may be spent once it is known to be dark');
+  } finally {
+    axios2.get = realGet;
+  }
+});
