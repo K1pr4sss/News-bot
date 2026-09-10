@@ -611,3 +611,14 @@ test('a refused cost check costs no DexScreener call at all', async () => {
     dexscreener.getTokenPriceUsd = realPrice;
   }
 });
+
+test('the score bar sits inside the range the LIVE population can actually reach - a 60 bar was derived from pre-band hot coins and produced 0 alerts in 24.8 hours because band coins top out around 50', () => {
+  assert.ok(
+    config.scoreAlertThreshold <= 55,
+    `band coins measured max 50 (median 20) across 364 samples; a bar above ~55 is unreachable, got ${config.scoreAlertThreshold}`,
+  );
+  assert.ok(
+    config.scoreAlertThreshold >= 43,
+    `below 43 the band-era trades are net negative (>=40 was -1.0% mean, -0.0198 SOL), got ${config.scoreAlertThreshold}`,
+  );
+});
