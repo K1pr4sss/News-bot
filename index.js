@@ -205,6 +205,33 @@ async function discoveryTick() {
  * Deduped across windows so a coin trending on several doesn't get evaluated
  * (and rate-limited against) several times per tick.
  */
+/**
+ * Jupiter's keyless token categories - see jupiterTokens.getDiscoveryCandidates.
+ * Every other discovery source here points at NEW coins (PumpPortal pushes
+ * pump.fun creations, new_pools returns two-minute-old pools) while the strategy
+ * buys ESTABLISHED ones - median pool age at entry is 28 days. This is the only
+ * source aimed where the band actually shops: measured median pool age 35.9
+ * days, median liquidity $158k.
+ *
+ * Deliberately NOT flagged as a trending pool. That flag is worth +10 score
+ * points and exists for GeckoTerminal's trending list; handing it to a second,
+ * differently-ranked source would inflate scores for these candidates and shift
+ * the scale the entry bar was just re-derived against. They compete on their own
+ * merits and the threshold keeps meaning what it was measured to mean.
+ */
+async function jupiterDiscoveryTick() {
+  try {
+    const candidates = await jupiterTokens.getDiscoveryCandidates(100);
+    logger.debug('Jupiter discovery tick', { candidates: candidates.length });
+    for (const token of candidates) {
+      // eslint-disable-next-line no-await-in-loop
+      await evaluator.evaluateCandidate(token);
+    }
+  } catch (err) {
+    logger.error('Jupiter discovery tick failed', { error: err.message });
+  }
+}
+
 async function trendingTick() {
   try {
     const seen = new Set();
@@ -335,6 +362,7 @@ function start() {
 
   scheduleInterval(discoveryTick, config.discoveryPollIntervalMs);
   scheduleInterval(trendingTick, config.trendingPollIntervalMs);
+  scheduleInterval(jupiterDiscoveryTick, config.jupiterDiscoveryIntervalMs);
   scheduleInterval(pendingTick, config.pendingCandidateRecheckIntervalMs);
   scheduleInterval(exitTick, config.exitPollIntervalMs);
   // Keeps the rejections table bounded. At the observed ~12 candidates/min

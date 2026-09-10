@@ -162,3 +162,29 @@ test('a failed token lookup records nulls rather than throwing - enrichment must
     axios2.get = realGet;
   }
 });
+
+test('discovery maps Jupiter tokens onto the candidate shape evaluateCandidate expects, and drops anything unpriceable', () => {
+  const jt = require('../lib/jupiterTokens');
+  const c = jt.toCandidate({
+    id: 'MINT1', name: 'Coin', symbol: 'CN', usdPrice: 0.5, liquidity: 120000,
+    firstPool: { createdAt: '2026-08-01T00:00:00Z' },
+    stats1h: { priceChange: 7.5, buyVolume: 1000, sellVolume: 500, numBuys: 12, numSells: 8 },
+    stats5m: { priceChange: 1.2 },
+  });
+  assert.strictEqual(c.mint, 'MINT1');
+  assert.strictEqual(c.priceUsd, 0.5);
+  assert.strictEqual(c.liquidityUsd, 120000);
+  assert.strictEqual(c.priceChangeH1Pct, 7.5);
+  assert.strictEqual(c.volumeH1Usd, 1500, 'volume is buy + sell, matching the GeckoTerminal shape');
+  assert.strictEqual(c.buyersH1, 12);
+  assert.ok(c.poolCreatedAt > 0, 'pool age must survive so the minimum-age gate can apply');
+  assert.strictEqual(jt.toCandidate({ id: 'X' }), null, 'no price means not a candidate');
+  assert.strictEqual(jt.toCandidate(null), null);
+});
+
+test('a field Jupiter does not report stays undefined rather than becoming 0 - a zero would read as a real measurement of "no buyers" and fail gates open on invented data', () => {
+  const jt = require('../lib/jupiterTokens');
+  const c = jt.toCandidate({ id: 'M', symbol: 'S', usdPrice: 1, liquidity: 9000, stats1h: {} });
+  assert.strictEqual(c.priceChangeH1Pct, undefined);
+  assert.strictEqual(c.volumeH1Usd, undefined);
+});
