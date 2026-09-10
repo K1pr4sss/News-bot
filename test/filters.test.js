@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { runSafetyFilters } = require('../lib/filters');
+const config = require('../lib/config');
 
 const cleanToken = { symbol: 'XYZ', liquidityUsd: 50000, socialsCount: 1 };
 const cleanRugcheck = { rugged: false, mintAuthorityActive: false, freezeAuthorityActive: false };
@@ -154,4 +155,48 @@ test('the momentum band still fails OPEN when h1 is unreadable (a pool minutes o
 test('the 50%+ momentum the bot used to REQUIRE is now the thing it refuses', () => {
   const { pass } = runSafetyFilters({ ...aged, priceChangeH1Pct: 50 }, cleanRugcheck, null);
   assert.strictEqual(pass, false);
+});
+
+// --- Telegram override ------------------------------------------------------
+// The momentum ceiling blocks 100% of coins up more than 50% in an hour - 4,581
+// of them in 43 hours - so the bot cannot participate in any hype wave. A named
+// call in a curated alpha group is the one OFF-chain signal available, and the
+// one thing a wash trader cannot manufacture cheaply.
+
+test('a coin named in a tracked alpha group skips the momentum band', () => {
+  const hot = { ...cleanToken, poolCreatedAt: Date.now() - 120 * 60000, priceChangeH1Pct: 300 };
+  assert.strictEqual(runSafetyFilters(hot, cleanRugcheck, null).pass, false, 'blocked without the call');
+  assert.strictEqual(
+    runSafetyFilters({ ...hot, telegramCalled: true }, cleanRugcheck, null).pass, true,
+    'a tracked-group call waives the momentum judgement',
+  );
+});
+
+test('the override waives momentum ONLY - every safety filter still applies', () => {
+  const base = { ...cleanToken, poolCreatedAt: Date.now() - 120 * 60000, priceChangeH1Pct: 300, telegramCalled: true };
+  // rug verdict
+  assert.strictEqual(runSafetyFilters(base, { ...cleanRugcheck, rugged: true }, null).pass, false);
+  // mint authority
+  assert.strictEqual(runSafetyFilters(base, { ...cleanRugcheck, mintAuthorityActive: true }, null).pass, false);
+  // top-holder cap
+  assert.strictEqual(runSafetyFilters(base, { ...cleanRugcheck, topHolderPct: 90 }, null).pass, false);
+  // liquidity floor
+  assert.strictEqual(runSafetyFilters({ ...base, liquidityUsd: 100 }, cleanRugcheck, null).pass, false);
+  // pool age floor
+  assert.strictEqual(runSafetyFilters({ ...base, poolCreatedAt: Date.now() - 60000 }, cleanRugcheck, null).pass, false);
+  // churn ceiling
+  assert.strictEqual(
+    runSafetyFilters({ ...base, liquidityUsd: 50000, volumeH1Usd: 50000 * 40 }, cleanRugcheck, null).pass, false,
+  );
+});
+
+test('the override can be switched off entirely', () => {
+  const original = config.telegramOverridesMomentum;
+  config.telegramOverridesMomentum = false;
+  try {
+    const hot = { ...cleanToken, poolCreatedAt: Date.now() - 120 * 60000, priceChangeH1Pct: 300, telegramCalled: true };
+    assert.strictEqual(runSafetyFilters(hot, cleanRugcheck, null).pass, false);
+  } finally {
+    config.telegramOverridesMomentum = original;
+  }
 });
