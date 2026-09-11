@@ -622,3 +622,9 @@ test('the score bar sits inside the range the LIVE population can actually reach
     `below 43 the band-era trades are net negative (>=40 was -1.0% mean, -0.0198 SOL), got ${config.scoreAlertThreshold}`,
   );
 });
+
+test('total exposure stays inside the band the ruin arithmetic supports - the position cap and the size fraction have to be read together, and the cap was last set against a size fraction that no longer applies', () => {
+  const exposure = config.maxOpenPositions * config.sizeTier1Pct;
+  assert.ok(exposure <= 0.30, `total deployed must stay <= 30%, got ${(exposure * 100).toFixed(0)}%`);
+  assert.ok(exposure >= 0.20, `below ~20% the bot is under-deployed against its own design, got ${(exposure * 100).toFixed(0)}%`);
+});
