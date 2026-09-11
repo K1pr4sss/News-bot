@@ -205,8 +205,12 @@ app.get('/config', (req, res) => {
     },
     sizing: {
       sizeTier1Pct: show('SIZE_TIER1_PCT', config.sizeTier1Pct),
+      sizeTier2Pct_score60plus: show('SIZE_TIER2_PCT', config.sizeTier2Pct),
+      sizeTier3Pct_score70plus: show('SIZE_TIER3_PCT', config.sizeTier3Pct),
+      maxTradePct: show('MAX_TRADE_PCT', config.maxTradePct),
       maxOpenPositions: show('MAX_OPEN_POSITIONS', config.maxOpenPositions),
-      totalExposurePct: Number((config.maxOpenPositions * config.sizeTier1Pct * 100).toFixed(1)),
+      typicalExposurePct: Number((config.maxOpenPositions * config.sizeTier1Pct * 100).toFixed(1)),
+      worstCaseExposurePct: Number((config.maxOpenPositions * config.maxTradePct * 100).toFixed(1)),
       minPositionSol: show('MIN_POSITION_SOL', config.minPositionSol),
       maxPositionsPerMintPerDay: show('MAX_POSITIONS_PER_MINT_PER_DAY', config.maxPositionsPerMintPerDay),
     },
