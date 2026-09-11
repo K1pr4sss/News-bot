@@ -66,3 +66,40 @@ test('the search asks for enough results to be informative - quota is charged pe
     axios2.get = realGet;
   }
 });
+
+test('the search asks about a COIN, not an English word - the bare term returned 50 unrelated videos for "HOOD", "fone" and "GOOG", and that count was satisfying the minMentionCount gate for every candidate', async () => {
+  process.env.YOUTUBE_API_KEY = 'k';
+  delete require.cache[require.resolve('../lib/config')];
+  delete require.cache[require.resolve('../lib/youtube')];
+  const axios2 = require('axios');
+  const realGet = axios2.get;
+  let sent = null;
+  axios2.get = async (url, opts) => { sent = opts.params; return { data: { items: [] } }; };
+  const fresh = require('../lib/youtube');
+  try {
+    await fresh.searchMentionCount('HOOD');
+    assert.ok(sent.q.includes('"HOOD"'), `the term must be quoted so it matches exactly, got: ${sent.q}`);
+    assert.ok(/solana|crypto|memecoin|token/i.test(sent.q), `a crypto context is required, got: ${sent.q}`);
+  } finally {
+    axios2.get = realGet;
+  }
+});
+
+test('qualifying can be reverted with one flag - if a genuinely hyped coin has no YouTube coverage the gate starves the funnel, the same failure the score bar at 60 produced', async () => {
+  process.env.YOUTUBE_API_KEY = 'k';
+  process.env.YOUTUBE_QUALIFY_SEARCH = 'false';
+  delete require.cache[require.resolve('../lib/config')];
+  delete require.cache[require.resolve('../lib/youtube')];
+  const axios2 = require('axios');
+  const realGet = axios2.get;
+  let sent = null;
+  axios2.get = async (url, opts) => { sent = opts.params; return { data: { items: [] } }; };
+  const fresh = require('../lib/youtube');
+  try {
+    await fresh.searchMentionCount('HOOD');
+    assert.strictEqual(sent.q, 'HOOD');
+  } finally {
+    axios2.get = realGet;
+    delete process.env.YOUTUBE_QUALIFY_SEARCH;
+  }
+});
