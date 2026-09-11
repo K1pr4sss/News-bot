@@ -30,8 +30,9 @@ test('computeVolumeSpikeRatio falls back to h1-only baseline when no 24h history
   assert.strictEqual(ratio, 2); // 2000 / 1000 baseline
 });
 
-test('computeSizeTier bands match spec exactly', () => {
-  assert.strictEqual(computeSizeTier(45).label, '40-55');
-  assert.strictEqual(computeSizeTier(60).label, '55-70');
+test('the size boundary sits at 60, where the real ledger splits - not the original 55, which the ledger does not support (score 50-60 flips train/test, 60+ is +19.3% and positive in both halves)', () => {
+  assert.strictEqual(computeSizeTier(45).label, 'base');
+  assert.strictEqual(computeSizeTier(59).label, 'base', '59 must NOT get the conviction size');
+  assert.strictEqual(computeSizeTier(60).label, '60-70');
   assert.strictEqual(computeSizeTier(85).label, '70+');
 });

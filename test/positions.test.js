@@ -279,16 +279,17 @@ test('entry sizing matches the score-band table against live paper balance', asy
     { score: 60 }, // 55-70 band
   );
   assert.strictEqual(entry.ok, true);
-  assert.strictEqual(entry.tier.label, '55-70');
+  assert.strictEqual(entry.tier.label, '60-70');
   // Asserted against config rather than a literal: what this test protects is
   // that the score lands in the right BAND and that the band's fraction is the
   // one applied, not any particular tuning of that fraction.
   assert.ok(Math.abs(entry.amountSol - balanceBefore * config.sizeTier2Pct) < 1e-9);
 });
 
-test('size tiers are flat - the score does not earn a bigger bet (higher-score trades died more often and lost more, in both halves of the sample)', () => {
-  assert.strictEqual(config.sizeTier2Pct, config.sizeTier1Pct);
-  assert.strictEqual(config.sizeTier3Pct, config.sizeTier1Pct);
+test('the conviction tier bets MORE than base, but is deliberately under-bet against its own Kelly (the 60+ subset computes to ~85% full-Kelly on n=7 with one small loss, which is what Kelly always says at that sample size)', () => {
+  assert.ok(config.sizeTier2Pct > config.sizeTier1Pct, 'score 60+ must earn a larger position');
+  assert.ok(config.sizeTier2Pct <= config.sizeTier1Pct * 2, 'but never more than 2x base on this much evidence');
+  assert.strictEqual(config.maxTradePct, config.sizeTier2Pct, 'or the tier is silently clamped back to base');
 });
 
 test('position size stays inside the range that survives the realised return distribution (12% bootstrapped to a 100% chance of losing 90%+ of the account over 400 trades; the measured per-trade mean is -10.5% with a 95% CI excluding zero)', () => {
