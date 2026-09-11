@@ -25,6 +25,12 @@ const config = require('../lib/config');
 // halves of the real ledger).
 config.scoreAlertThreshold = 40;
 
+// The rug gate fetches Jupiter token intel for every candidate that clears the
+// filters. Stub it so these tests stay offline and deterministic; they are about
+// the mention gate and alert content, not about organic scores.
+const jupiterTokens = require('../lib/jupiterTokens');
+jupiterTokens.getTokenData = async () => ({ ...jupiterTokens.EMPTY, organicScore: 75 });
+
 // Stub every external source evaluateCandidate touches - this test is about
 // the real-mention gate specifically, not any one source's actual behavior.
 const cleanRugcheck = {

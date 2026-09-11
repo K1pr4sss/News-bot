@@ -138,10 +138,10 @@ test('getStatus reports health without throwing', () => {
 
 // --- Jupiter Token API v2 (recorded, never gated) ---------------------------
 
-test('token intel is recorded but gates nothing - tested against all 95 traded mints, no field predicted the outcome (organicScore flips, its 70+ bucket is the WORST at -10.3% and 0 wins; devMints, holderCount and topHoldersPct all flip or are negative in both halves)', () => {
+test('every token-intel field is recorded, and exactly ONE of them gates: organicScore. The rest measured no better than chance against 95 traded mints and stay advisory', () => {
   const jt = require('../lib/jupiterTokens');
   const s = jt.getStatus();
-  assert.strictEqual(s.gated, false, 'if this ever becomes true it must be a decision made against forward data');
+  assert.ok(String(s.rugGate).includes('organicScore'), 'the rug gate must be visible in health output');
   assert.deepStrictEqual(Object.keys(jt.EMPTY).sort(), [
     'buyOrganicVolume24h', 'buyVolume24h', 'devBalancePct', 'devMigrations', 'devMints',
     'freezeAuthorityDisabled', 'graduated', 'holderCount', 'launchpad', 'mintAuthorityDisabled',
@@ -187,4 +187,47 @@ test('a field Jupiter does not report stays undefined rather than becoming 0 - a
   const c = jt.toCandidate({ id: 'M', symbol: 'S', usdPrice: 1, liquidity: 9000, stats1h: {} });
   assert.strictEqual(c.priceChangeH1Pct, undefined);
   assert.strictEqual(c.volumeH1Usd, undefined);
+});
+
+// --- the rug gate -----------------------------------------------------------
+// Both rugs the bot has taken since this reading started being recorded came in
+// at exactly organicScore 0, and no surviving position read under 38 - measured
+// AT ENTRY, before the outcome. Those two trades were 80% of that window's loss.
+
+test('refuses a coin Jupiter reports as having no genuine activity - the signature both rugs shared', () => {
+  const jt = require('../lib/jupiterTokens');
+  const r = jt.isOrganicallyTradeable({ organicScore: 0, organicScoreLabel: 'low' });
+  assert.strictEqual(r.ok, false);
+  assert.ok(r.reason.includes('organic score'));
+});
+
+test('accepts every level a surviving position actually had (38 and up)', () => {
+  const jt = require('../lib/jupiterTokens');
+  for (const score of [38.3, 48.4, 54.0, 61.7, 63.8, 65.3, 66.8, 84.3, 87.1, 95.6]) {
+    assert.strictEqual(jt.isOrganicallyTradeable({ organicScore: score }).ok, true, `score ${score} must pass`);
+  }
+});
+
+test('an UNKNOWN organic score never blocks a trade - same fail-open rule as every other gate', () => {
+  const jt = require('../lib/jupiterTokens');
+  assert.strictEqual(jt.isOrganicallyTradeable({ organicScore: null }).ok, true);
+  assert.strictEqual(jt.isOrganicallyTradeable({}).ok, true);
+  assert.strictEqual(jt.isOrganicallyTradeable(null).ok, true);
+});
+
+test('the threshold is not widened into the gap between 0 and 38 - there is no data there and inventing a boundary inside it is the overfit this project keeps repeating', () => {
+  const config2 = require('../lib/config');
+  assert.ok(config2.minOrganicScore <= 5, `must stay near the observed rug signature, got ${config2.minOrganicScore}`);
+});
+
+test('the rug gate can be switched off', () => {
+  const jt = require('../lib/jupiterTokens');
+  const config2 = require('../lib/config');
+  const original = config2.blockZeroOrganicScore;
+  config2.blockZeroOrganicScore = false;
+  try {
+    assert.strictEqual(jt.isOrganicallyTradeable({ organicScore: 0 }).ok, true);
+  } finally {
+    config2.blockZeroOrganicScore = original;
+  }
 });
