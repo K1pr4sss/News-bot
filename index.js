@@ -173,6 +173,65 @@ app.get('/sources', (req, res) => {
   });
 });
 
+// The effective trading configuration, and - the part that matters - whether
+// each value came from the code or from an environment variable overriding it.
+//
+// Every knob here is `process.env.X || default`, which means a stale Railway
+// variable set during some earlier session silently wins over anything shipped
+// since, with no error and no log line. That failure mode is invisible by
+// construction: the code says 5, the bot does 3, and nothing disagrees out loud.
+// This makes it one request to check.
+app.get('/config', (req, res) => {
+  const show = (envName, value) => ({
+    value,
+    source: process.env[envName] !== undefined ? `ENV OVERRIDE (${envName})` : 'code default',
+  });
+  res.json({
+    entry: {
+      scoreAlertThreshold: show('SCORE_ALERT_THRESHOLD', config.scoreAlertThreshold),
+      minPriceMomentumH1Pct: show('MIN_PRICE_MOMENTUM_H1_PCT', config.minPriceMomentumH1Pct),
+      maxPriceMomentumH1Pct: show('MAX_PRICE_MOMENTUM_H1_PCT', config.maxPriceMomentumH1Pct),
+      minPoolAgeMinutes: show('MIN_POOL_AGE_MINUTES', config.minPoolAgeMinutes),
+      maxVolumeToLiquidityRatio: show('MAX_VOLUME_TO_LIQUIDITY_RATIO', config.maxVolumeToLiquidityRatio),
+      minLiquidityUsd: show('MIN_LIQUIDITY_USD', config.minLiquidityUsd),
+      maxTopHolderPct: show('MAX_TOP_HOLDER_PCT', config.maxTopHolderPct),
+      minMentionCount: show('MIN_MENTION_COUNT', config.minMentionCount),
+      telegramOverridesMomentum: show('TELEGRAM_OVERRIDES_MOMENTUM', config.telegramOverridesMomentum),
+    },
+    rugGate: {
+      minOrganicScore: show('MIN_ORGANIC_SCORE', config.minOrganicScore),
+      enabled: show('BLOCK_ZERO_ORGANIC_SCORE', config.blockZeroOrganicScore),
+      maxRoundTripCostPct: show('MAX_ROUND_TRIP_COST_PCT', config.maxRoundTripCostPct),
+    },
+    sizing: {
+      sizeTier1Pct: show('SIZE_TIER1_PCT', config.sizeTier1Pct),
+      maxOpenPositions: show('MAX_OPEN_POSITIONS', config.maxOpenPositions),
+      totalExposurePct: Number((config.maxOpenPositions * config.sizeTier1Pct * 100).toFixed(1)),
+      minPositionSol: show('MIN_POSITION_SOL', config.minPositionSol),
+      maxPositionsPerMintPerDay: show('MAX_POSITIONS_PER_MINT_PER_DAY', config.maxPositionsPerMintPerDay),
+    },
+    exits: {
+      takeProfitTier1Pct: show('TAKE_PROFIT_TIER1_PCT', config.takeProfitTier1Pct),
+      stopLossPct: show('STOP_LOSS_PCT', config.stopLossPct),
+      thesisCutAfterMinutes: show('THESIS_CUT_AFTER_MINUTES', config.thesisCutAfterMinutes),
+      holdMinutesTier1: show('HOLD_MINUTES_TIER1', config.holdMinutesTier1),
+    },
+    costModel: {
+      paperFeeSol: show('PAPER_FEE_SOL', config.paperFeeSol),
+      paperSlippagePct: show('PAPER_SLIPPAGE_PCT', config.paperSlippagePct),
+    },
+    discovery: {
+      discoveryPollIntervalMs: show('DISCOVERY_POLL_INTERVAL_MS', config.discoveryPollIntervalMs),
+      trendingPollIntervalMs: show('TRENDING_POLL_INTERVAL_MS', config.trendingPollIntervalMs),
+      trendingDurations: show('TRENDING_DURATIONS', config.trendingDurations),
+      jupiterDiscoveryIntervalMs: show('JUPITER_DISCOVERY_INTERVAL_MS', config.jupiterDiscoveryIntervalMs),
+    },
+    overridesInEffect: Object.keys(process.env)
+      .filter((k) => /^(SCORE_|MIN_|MAX_|SIZE_|TAKE_|STOP_|THESIS_|HOLD_|PAPER_|TRENDING_|DISCOVERY_|JUPITER_|BLOCK_|TELEGRAM_OVERRIDES)/.test(k))
+      .sort(),
+  });
+});
+
 app.get('/telegram-check', async (req, res) => {
   res.json(await telegramUserClient.checkFreshness());
 });
